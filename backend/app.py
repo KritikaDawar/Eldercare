@@ -141,7 +141,24 @@ def me():
 def owned(model, item_id, user_id):
     item = db.session.get(model, item_id)
     return item if item and getattr(item, "user_id", None) == user_id else None
+@app.post("/api/notifications/test-email")
+@jwt_required()
+def test_email():
+    user = current_user()
 
+    try:
+        send_brevo_email(
+            user.email,
+            "ElderCare test email",
+            "<h2>Email setup successful!</h2><p>ElderCare email notifications are connected.</p>"
+        )
+        return jsonify({"message": "Test email sent successfully."})
+
+    except urllib.error.HTTPError:
+        return jsonify({"error": "Brevo could not send the email. Please check your Brevo settings."}), 502
+
+    except Exception:
+        return jsonify({"error": "Unable to send the test email. Please check the backend configuration."}), 500
 @app.route("/api/medications", methods=["GET", "POST"])
 @jwt_required()
 def medications():
