@@ -16,6 +16,7 @@ db_url = os.getenv("DATABASE_URL", "sqlite:///eldercare.db")
 if db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql://", 1)
 app.config["SQLALCHEMY_DATABASE_URI"] = db_url
+CORS(app, resources={r"/*": {"origins": [
     "https://eldercare-cu8d.vercel.app",
     "http://localhost:5173"
 ]}})
