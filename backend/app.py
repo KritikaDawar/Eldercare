@@ -283,7 +283,56 @@ def caregiver_summary():
     if "health" in scopes:
         out["measurements"]=[{"kind":x.kind,"value":x.value,"unit":x.unit,"recorded_at":x.recorded_at} for x in Measurement.query.filter_by(user_id=owner.id).order_by(Measurement.recorded_at.desc()).limit(20).all()]
     return jsonify(out)
+@app.post("/api/notifications/run-reminders")
+def run_reminders():
+    secret = os.getenv("REMINDER_CRON_SECRET")
+    if not secret or request.headers.get("X-Reminder-Secret") != secret:
+        return jsonify({"error": "Unauthorized"}), 401
 
+    now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    scheduled_time = now.strftime("%H:%M")
+    scheduled_for = now.strftime("%Y-%m-%d %H:%M")
+
+    sent = 0
+
+    medications = Medication.query.filter_by(active=True).all()
+
+    for med in medications:
+        if med.schedule_time != scheduled_time:
+            continue
+
+        already_sent = Dose.query.filter_by(
+            medication_id=med.id,
+            scheduled_for=scheduled_for
+        ).first()
+
+        if already_sent:
+            continue
+
+        user = db.session.get(User, med.user_id)
+
+        if not user:
+            continue
+
+        send_brevo_email(
+            user.email,
+            "ElderCare medication reminder",
+            f"<h2>Medication reminder</h2>"
+            f"<p>It is time to take <b>{med.name}</b>.</p>"
+            f"<p>Dosage: {med.dosage}</p>"
+            f"<p>Instructions: {med.instructions or 'Follow your prescription.'}</p>"
+        )
+
+        db.session.add(Dose(
+            medication_id=med.id,
+            user_id=user.id,
+            scheduled_for=scheduled_for,
+            status="pending"
+        ))
+        db.session.commit()
+        sent += 1
+
+    return jsonify({"message": "Reminder check completed.", "emails_sent": sent})
 with app.app_context():
     db.create_all()
 
