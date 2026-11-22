@@ -76,6 +76,22 @@ class Dose(db.Model):
     scheduled_for = db.Column(db.String(32), nullable=False)
     status = db.Column(db.String(12), default="pending")  # pending/taken/skipped/missed
     updated_at = db.Column(db.DateTime, default=datetime.utcnow)
+    class ReminderLog(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    medication_id = db.Column(
+        db.Integer,
+        db.ForeignKey("medication.id"),
+        nullable=False
+    )
+    scheduled_for = db.Column(db.String(16), nullable=False)
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "medication_id",
+            "scheduled_for",
+            name="uq_reminder_medication_schedule"
+        ),
+    )
 
 class Activity(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -290,49 +306,64 @@ def run_reminders():
         return jsonify({"error": "Unauthorized"}), 401
 
     now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
-    scheduled_time = now.strftime("%H:%M")
-    scheduled_for = now.strftime("%Y-%m-%d %H:%M")
+    window_start = now - timedelta(minutes=10)
 
     sent = 0
+    failed = 0
 
     medications = Medication.query.filter_by(active=True).all()
 
     for med in medications:
-        if med.schedule_time != scheduled_time:
-            continue
+        try:
+            scheduled_time = datetime.strptime(
+                med.schedule_time, "%H:%M"
+            ).time()
 
-        already_sent = Dose.query.filter_by(
-            medication_id=med.id,
-            scheduled_for=scheduled_for
-        ).first()
+            for day in (now.date(), (now - timedelta(days=1)).date()):
+                scheduled_dt = datetime.combine(day, scheduled_time)
 
-        if already_sent:
-            continue
+                if not (window_start < scheduled_dt <= now):
+                    continue
 
-        user = db.session.get(User, med.user_id)
+                scheduled_for = scheduled_dt.strftime("%Y-%m-%d %H:%M")
 
-        if not user:
-            continue
+                already_sent = ReminderLog.query.filter_by(
+                    medication_id=med.id,
+                    scheduled_for=scheduled_for
+                ).first()
 
-        send_brevo_email(
-            user.email,
-            "ElderCare medication reminder",
-            f"<h2>Medication reminder</h2>"
-            f"<p>It is time to take <b>{med.name}</b>.</p>"
-            f"<p>Dosage: {med.dosage}</p>"
-            f"<p>Instructions: {med.instructions or 'Follow your prescription.'}</p>"
-        )
+                if already_sent:
+                    continue
 
-        db.session.add(Dose(
-            medication_id=med.id,
-            user_id=user.id,
-            scheduled_for=scheduled_for,
-            status="pending"
-        ))
-        db.session.commit()
-        sent += 1
+                user = db.session.get(User, med.user_id)
+                if not user:
+                    continue
 
-    return jsonify({"message": "Reminder check completed.", "emails_sent": sent})
+                send_brevo_email(
+                    user.email,
+                    "ElderCare medication reminder",
+                    f"<h2>Medication reminder</h2>"
+                    f"<p>It is time to take <b>{med.name}</b>.</p>"
+                    f"<p>Dosage: {med.dosage}</p>"
+                    f"<p>Instructions: {med.instructions or 'Follow your prescription.'}</p>"
+                )
+
+                db.session.add(ReminderLog(
+                    medication_id=med.id,
+                    scheduled_for=scheduled_for
+                ))
+                db.session.commit()
+                sent += 1
+
+        except Exception:
+            db.session.rollback()
+            failed += 1
+
+    return jsonify({
+        "message": "Reminder check completed.",
+        "emails_sent": sent,
+        "failed": failed
+    })
 with app.app_context():
     db.create_all()
 
