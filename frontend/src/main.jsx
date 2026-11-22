@@ -5,12 +5,52 @@ const headers=()=>({'Content-Type':'application/json',...(token?{Authorization:`
 async function api(path,method='GET',body){const r=await fetch(API+path,{method,headers:headers(),...(body?{body:JSON.stringify(body)}:{})});const d=await r.json();if(!r.ok)throw Error(d.error||'Request failed');return d}
 async function refresh(){if(!token)return;try{const keys=['medications','doses','activities','measurements','permissions'];const vals=await Promise.all(keys.map(k=>api('/'+k)));setData(Object.fromEntries(keys.map((k,i)=>[k,vals[i]])))}catch(e){setMsg(e.message)}}
 useEffect(()=>{refresh()},[token]);
+               useEffect(() => {
+  if (!token) return;
+
+  const checkReminders = () => {
+    if (!("Notification" in window) || Notification.permission !== "granted") return;
+
+    const now = new Date();
+    const today = now.toLocaleDateString("en-CA");
+    const currentTime = now.toTimeString().slice(0, 5);
+
+    data.medications.forEach((med) => {
+      if (med.schedule_time === currentTime) {
+        const key = `reminder-${med.id}-${today}-${currentTime}`;
+
+        if (!localStorage.getItem(key)) {
+          new Notification("ElderCare medication reminder", {
+            body: `Time to take ${med.name} (${med.dosage}). ${med.instructions || ""}`,
+          });
+          localStorage.setItem(key, "sent");
+        }
+      }
+    });
+  };
+
+  checkReminders();
+  const timer = setInterval(checkReminders, 30000);
+  return () => clearInterval(timer);
+}, [token, data.medications]);
 async function submitAuth(e){e.preventDefault();setBusy(true);setMsg('');const f=new FormData(e.currentTarget);try{const d=await api('/auth/'+(f.get('mode')==='register'?'register':'login'),'POST',{name:f.get('name'),email:f.get('email'),password:f.get('password')});localStorage.setItem('ec_token',d.token);localStorage.setItem('ec_user',JSON.stringify(d.user));setToken(d.token);setUser(d.user)}catch(x){setMsg(x.message)}finally{setBusy(false)}}
 function logout(){localStorage.clear();setToken('');setUser(null)}
 async function act(fn){try{setMsg('');await fn();await refresh();setMsg('Saved successfully.')}catch(e){setMsg(e.message)}}
 const nav=[['Dashboard',LayoutDashboard],['Medications',Pill],['Activity',Activity],['Health records',ClipboardList],['Caregiver sharing',Users]];
 if(!token)return <Auth onSubmit={submitAuth} busy={busy} msg={msg}/>;
 return <div className="app"><aside className={mobile?'side open':'side'}><div className="brand"><span className="brandicon"><Heart/></span><span>ElderCare<small>WELLNESS COMPANION</small></span><button className="mobileclose" onClick={()=>setMobile(false)}><X/></button></div><div className="navlabel">YOUR SPACE</div>{nav.map(([n,I])=><button key={n} className={'nav '+(page===n?'active':'')} onClick={()=>{setPage(n);setMobile(false)}}><I size={19}/>{n}</button>)}<div className="sidebottom"><div className="privacy"><ShieldCheck/><div><b>Your data, your choice</b><small>Caregiver sharing is optional and controlled by you.</small></div></div><button className="nav" onClick={logout}><LogOut size={18}/>Sign out</button></div></aside><main className="main"><header><button className="hamb" onClick={()=>setMobile(true)}><Menu/></button><div><div className="eyebrow">YOUR PERSONAL WELLNESS SPACE</div><h1>{page==='Dashboard'?'Good day':page}, {user?.name?.split(' ')[0]||'there'} <span className="wave">☀</span></h1></div><div className="profile"><span className="avatar">{user?.name?.[0]?.toUpperCase()}</span><div><b>{user?.name}</b><small>Personal account</small></div></div></header>{msg&&<div className="toast" onClick={()=>setMsg('')}>{msg} <X size={14}/></div>}
+  <button className="primary" onClick={async () => {
+  if ("Notification" in window) {
+    const permission = await Notification.requestPermission();
+    setMsg(permission === "granted"
+      ? "Browser reminders enabled!"
+      : "Please allow notifications in your browser settings.");
+  } else {
+    setMsg("Your browser does not support notifications.");
+  }
+}}>
+  Enable medication notifications
+</button>
 {page==='Dashboard'&&<Dashboard data={data} setPage={setPage} user={user}/>}
 {page==='Medications'&&<Medications data={data} act={act}/>}
 {page==='Activity'&&<Activities data={data} act={act}/>}
