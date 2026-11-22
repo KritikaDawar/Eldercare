@@ -15,9 +15,7 @@ app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "dev-jwt-change-me")
 db_url = os.getenv("DATABASE_URL", "sqlite:///eldercare.db")
 if db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql://", 1)
-app.config["SQLALCHEMY_DATABASE_URI"] = postgresql://neondb_owner:npg_WA2kFa5lgYvZ@ep-frosty-sun-bb3ay0wa-pooler.c-15.us-east-1.aws.neon.tech/neondb?channel_binding=require&sslmode=require
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-CORS(app, resources={r"/api/*": {"origins": [
+app.config["SQLALCHEMY_DATABASE_URI"] = db_url
     "https://eldercare-cu8d.vercel.app",
     "http://localhost:5173"
 ]}})
