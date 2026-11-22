@@ -1,0 +1,1 @@
+Place genuine screenshots and test logs here after running the MVP. Suggested names: 01-login.png, 02-dashboard.png, 03-medications.png, 04-dose-log.png, 05-activity.png, 06-health-records.png, 07-sharing-active.png, 08-sharing-revoked.png, 09-mobile.png, 10-test-output.txt. Do not use mock screenshots as proof of execution.

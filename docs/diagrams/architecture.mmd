@@ -1,0 +1,11 @@
+flowchart TB
+A[Older Adult / Caregiver] --> B[React UI]
+B --> C[Flask REST API]
+C --> D[JWT Authentication]
+C --> E[Medication and Dose]
+C --> F[Activity and Health]
+C --> G[Consent and Sharing]
+D --> H[(PostgreSQL / SQLite)]
+E --> H
+F --> H
+G --> H
