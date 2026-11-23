@@ -1,0 +1,22 @@
+name: ElderCare medication reminders
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  send-reminders:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger reminder check
+        env:
+          REMINDER_CRON_SECRET: ${{ secrets.REMINDER_CRON_SECRET }}
+        run: |
+          curl --fail --silent --show-error \
+            --request POST \
+            --header "X-Reminder-Secret: ${REMINDER_CRON_SECRET}" \
+            https://eldercare-5ey2.vercel.app/api/notifications/run-reminders
