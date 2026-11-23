@@ -74,9 +74,11 @@ class Dose(db.Model):
     medication_id = db.Column(db.Integer, db.ForeignKey("medication.id"), nullable=False, index=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
     scheduled_for = db.Column(db.String(32), nullable=False)
-    status = db.Column(db.String(12), default="pending")  # pending/taken/skipped/missed
+    status = db.Column(db.String(12), default="pending")
     updated_at = db.Column(db.DateTime, default=datetime.utcnow)
-    class ReminderLog(db.Model):
+
+
+class ReminderLog(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     medication_id = db.Column(
         db.Integer,
@@ -92,7 +94,6 @@ class Dose(db.Model):
             name="uq_reminder_medication_schedule"
         ),
     )
-
 class Activity(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
