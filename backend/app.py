@@ -300,13 +300,14 @@ def caregiver_summary():
     if "health" in scopes:
         out["measurements"]=[{"kind":x.kind,"value":x.value,"unit":x.unit,"recorded_at":x.recorded_at} for x in Measurement.query.filter_by(user_id=owner.id).order_by(Measurement.recorded_at.desc()).limit(20).all()]
     return jsonify(out)
+
 @app.post("/api/notifications/run-reminders")
 def run_reminders():
     secret = os.getenv("REMINDER_CRON_SECRET")
     if not secret or request.headers.get("X-Reminder-Secret") != secret:
         return jsonify({"error": "Unauthorized"}), 401
 
-    now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    now = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=5, minutes=30)
     window_start = now - timedelta(minutes=10)
 
     sent = 0
@@ -314,6 +315,57 @@ def run_reminders():
 
     medications = Medication.query.filter_by(active=True).all()
 
+    for med in medications:
+        try:
+            scheduled_time = datetime.strptime(
+                med.schedule_time, "%H:%M"
+            ).time()
+
+            for day in (now.date(), (now - timedelta(days=1)).date()):
+                scheduled_dt = datetime.combine(day, scheduled_time)
+
+                if not (window_start < scheduled_dt <= now):
+                    continue
+
+                scheduled_for = scheduled_dt.strftime("%Y-%m-%d %H:%M")
+
+                already_sent = ReminderLog.query.filter_by(
+                    medication_id=med.id,
+                    scheduled_for=scheduled_for
+                ).first()
+
+                if already_sent:
+                    continue
+
+                user = db.session.get(User, med.user_id)
+                if not user:
+                    continue
+
+                send_brevo_email(
+                    user.email,
+                    "ElderCare medication reminder",
+                    f"<h2>Medication reminder</h2>"
+                    f"<p>It is time to take <b>{med.name}</b>.</p>"
+                    f"<p>Dosage: {med.dosage}</p>"
+                    f"<p>Instructions: {med.instructions or 'Follow your prescription.'}</p>"
+                )
+
+                db.session.add(ReminderLog(
+                    medication_id=med.id,
+                    scheduled_for=scheduled_for
+                ))
+                db.session.commit()
+                sent += 1
+
+        except Exception:
+            db.session.rollback()
+            failed += 1
+
+    return jsonify({
+        "message": "Reminder check completed.",
+        "emails_sent": sent,
+        "failed": failed
+    })
     for med in medications:
         try:
             scheduled_time = datetime.strptime(
