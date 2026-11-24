@@ -201,6 +201,42 @@ def test_email():
 
     except Exception:
         return jsonify({"error": "Unable to send the test email. Please check the backend configuration."}), 500
+@app.post("/api/emergency/sos")
+@jwt_required()
+def emergency_sos():
+    owner = current_user()
+    grants = Permission.query.filter_by(owner_id=owner.id, revoked_at=None).all()
+    recipients = sorted({p.caregiver_email.strip().lower() for p in grants if p.caregiver_email})
+    if not recipients:
+        return fail("No active caregiver contacts are linked to this account. Add a caregiver in Caregiver sharing first.", 400)
+
+    sent = 0
+    failed = 0
+    alert_time = datetime.now().astimezone().strftime("%d %b %Y, %I:%M %p %Z")
+    safe_name = owner.name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    safe_email = owner.email.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    subject = "Emergency SOS alert from ElderCare"
+    html = (
+        "<h2>Emergency SOS alert</h2>"
+        f"<p><b>{safe_name}</b> has triggered the SOS alert in ElderCare.</p>"
+        f"<p>Account: {safe_email}<br>Time: {alert_time}</p>"
+        "<p>Please contact them immediately and check whether they need help.</p>"
+        "<p><b>Important:</b> This email is an alert to a caregiver. ElderCare has not contacted emergency services.</p>"
+    )
+    for email in recipients:
+        try:
+            send_brevo_email(email, subject, html)
+            sent += 1
+        except Exception:
+            failed += 1
+    return jsonify({
+        "message": "SOS alert sent to linked caregiver contacts." if sent else "ElderCare could not send the SOS alert.",
+        "emails_sent": sent,
+        "failed": failed,
+        "emergency_services_contacted": False
+    }), (200 if sent else 502)
+
+
 @app.route("/api/medications", methods=["GET", "POST"])
 @jwt_required()
 def medications():
