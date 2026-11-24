@@ -197,19 +197,83 @@ body{color:var(--ec-ink)!important}
 .main .panel button:not(.primary){color:#477856}
 .auth-warm-card{background:#f4f7f1!important}
 @media(max-width:760px){.side{box-shadow:12px 0 35px rgba(38,70,47,.16)!important}}
+
+/* Visual alignment and readable rhythm */
+.app{width:100%;}
+.main{min-width:0;}
+.main>header{gap:22px;min-height:104px;padding:22px clamp(20px,3vw,42px)!important;}
+.main>header h1{font-size:clamp(22px,2.2vw,30px)!important;line-height:1.2!important;letter-spacing:-.55px;margin:5px 0 0!important;}
+.main>header .eyebrow{font-size:10px;letter-spacing:1.45px;font-weight:800;}
+.main>header .profile{flex-shrink:0;}
+.main> :not(header):not(footer){max-width:1180px;margin-left:auto;margin-right:auto;}
+.main>.toast{max-width:1180px;margin:16px auto!important;}
+.notification-bar{width:calc(100% - 2px);box-sizing:border-box;display:flex;align-items:center;justify-content:space-between;gap:18px;padding:14px 18px;margin:20px auto 24px!important;border:1px solid #cfddcf;border-radius:16px;background:rgba(244,247,241,.92);box-shadow:0 5px 16px rgba(39,77,52,.055);}
+.notification-copy{display:flex;align-items:center;gap:12px;min-width:0;}
+.notification-icon{width:38px;height:38px;flex:0 0 38px;display:grid;place-items:center;border-radius:12px;background:#dce9dd;color:#315f49;}
+.notification-copy strong{display:block;color:#31533d;font-size:13px;line-height:1.35;margin-bottom:3px;}
+.notification-copy span:not(.notification-icon){display:block;color:#718277;font-size:12px;line-height:1.45;}
+.notification-button{flex:0 0 auto;min-height:40px;padding:0 17px!important;border-radius:11px!important;font-size:12px!important;font-weight:750!important;white-space:nowrap;}
+.sectionhead{display:flex;align-items:center;justify-content:space-between;gap:22px;padding:22px 24px!important;border-radius:18px!important;margin:22px 0 16px!important;}
+.sectionhead>div{min-width:0;}
+.sectionhead h2{font-size:clamp(21px,2vw,27px)!important;line-height:1.22!important;letter-spacing:-.45px;margin:5px 0 6px!important;}
+.sectionhead p{font-size:13px;line-height:1.55;margin:0!important;max-width:650px;}
+.panel,.formpanel{box-sizing:border-box;border-radius:18px!important;padding:22px!important;margin-top:16px!important;}
+.panel h3,.formpanel h3{font-size:17px;line-height:1.35;letter-spacing:-.2px;margin:0 0 12px;color:#31533d;}
+.panel p,.formpanel p{line-height:1.6;}
+.formgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 18px;margin:16px 0;}
+.field{display:flex;flex-direction:column;gap:7px;min-width:0;}
+.field label{font-size:12px;font-weight:750;line-height:1.4;color:#496653;}
+.field input,.field select,.field textarea{width:100%;min-height:44px;box-sizing:border-box;padding:10px 12px;font-size:13px;line-height:1.4;}
+.formpanel>.primary,.formpanel>button.primary{min-height:42px;padding:0 18px;border-radius:11px;font-size:13px;font-weight:750;}
+.primary,.softbtn,.iconbtn,.textbtn{font-family:inherit;line-height:1.25;}
+.primary,.softbtn{min-height:38px;padding:9px 14px;border-radius:10px;font-size:12px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;gap:7px;}
+.listrow{display:flex;align-items:center;gap:14px;padding:13px 15px!important;margin:9px 0;border-radius:13px!important;min-width:0;}
+.listrow>div:first-child{min-width:0;}
+.listrow b,.listrow strong{font-size:13px;line-height:1.4;color:#31533d;}
+.listrow small{font-size:11px;line-height:1.45;color:#718277;}
+.status,.time{display:inline-flex;align-items:center;justify-content:center;min-height:28px;padding:5px 10px;border-radius:9px;font-size:11px;font-weight:750;white-space:nowrap;}
+.checks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 14px;margin:14px 0 18px;}
+.checks label{display:flex;align-items:flex-start;gap:9px;padding:11px 12px;border:1px solid #d5e1d5;border-radius:11px;background:#edf3eb;color:#476453;font-size:12px;line-height:1.45;}
+.checks input{width:16px;height:16px;flex:0 0 16px;margin:1px 0 0;accent-color:#477856;}
+.notice{display:flex;align-items:flex-start;gap:10px;padding:13px 15px!important;border-radius:13px;line-height:1.55!important;font-size:12px!important;background:#edf4ed;border:1px solid #d6e3d6;color:#5f7766;}
+.notice svg{flex:0 0 auto;margin-top:1px;}
+.toast{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border-radius:12px;font-size:12px;line-height:1.45;}
+footer{max-width:1180px;margin:28px auto 0!important;padding:18px 22px!important;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;color:#718277;font-size:11px;}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #9bbda1!important;outline-offset:2px;}
+@media(max-width:760px){
+ .main>header{min-height:84px;padding:16px 18px!important;gap:12px;}
+ .main>header .profile{display:none;}
+ .notification-bar{align-items:stretch;flex-direction:column;padding:14px;margin:14px auto 18px!important;}
+ .notification-button{width:100%;}
+ .sectionhead{align-items:flex-start;flex-direction:column;padding:18px!important;}
+ .sectionhead>.primary,.sectionhead>button{width:100%;}
+ .formgrid,.checks{grid-template-columns:minmax(0,1fr);}
+ .panel,.formpanel{padding:17px!important;}
+ .listrow{align-items:flex-start;flex-wrap:wrap;gap:9px;}
+ footer{padding:16px 18px!important;}
+}
 `}</style><aside className={mobile?'side open':'side'}><div className="brand"><span className="brandicon"><Heart/></span><span>ElderCare<small>WELLNESS COMPANION</small></span><button className="mobileclose" onClick={()=>setMobile(false)}><X/></button></div><div className="navlabel">YOUR SPACE</div>{nav.map(([n,I])=><button key={n} className={'nav '+(page===n?'active':'')} onClick={()=>{setPage(n);setMobile(false)}}><I size={19}/>{n}</button>)}<div className="sidebottom"><div className="privacy"><ShieldCheck/><div><b>Your data, your choice</b><small>Caregiver sharing is optional and controlled by you.</small></div></div><button className="nav" onClick={logout}><LogOut size={18}/>Sign out</button></div></aside><main className="main"><header><button className="hamb" onClick={()=>setMobile(true)}><Menu/></button><div><div className="eyebrow">YOUR PERSONAL WELLNESS SPACE</div><h1>{page==='Dashboard'?'Good day':page}, {user?.name?.split(' ')[0]||'there'} <span className="wave">☀</span></h1></div><div className="profile"><span className="avatar">{user?.name?.[0]?.toUpperCase()}</span><div><b>{user?.name}</b><small>Personal account</small></div></div></header>{msg&&<div className="toast" onClick={()=>setMsg('')}>{msg} <X size={14}/></div>}
-  <button className="primary" onClick={async () => {
-  if ("Notification" in window) {
-    const permission = await Notification.requestPermission();
-    setMsg(permission === "granted"
-      ? "Browser reminders enabled!"
-      : "Please allow notifications in your browser settings.");
-  } else {
-    setMsg("Your browser does not support notifications.");
-  }
-}}>
-  Enable medication notifications
-</button>
+  <div className="notification-bar">
+    <div className="notification-copy">
+      <span className="notification-icon"><Clock size={18}/></span>
+      <div>
+        <strong>Medication alerts</strong>
+        <span>Get a gentle browser notification when it is time for a scheduled dose.</span>
+      </div>
+    </div>
+    <button className="primary notification-button" onClick={async () => {
+      if ("Notification" in window) {
+        const permission = await Notification.requestPermission();
+        setMsg(permission === "granted"
+          ? "Browser reminders enabled!"
+          : "Please allow notifications in your browser settings.");
+      } else {
+        setMsg("Your browser does not support notifications.");
+      }
+    }}>
+      Enable notifications
+    </button>
+  </div>
 {page==='Dashboard'&&<Dashboard data={data} setPage={setPage} user={user}/>}
 {page==='Medications'&&<Medications data={data} act={act}/>}
 {page==='Activity'&&<Activities data={data} act={act}/>}
