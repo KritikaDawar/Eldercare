@@ -147,7 +147,52 @@ async function loadCaregiverSummary(e){
 }
 const nav=[['Dashboard',LayoutDashboard],['Medications',Pill],['Activity',Activity],['Health records',ClipboardList],['Caregiver sharing',Users],['Caregiver dashboard',Users]];
 if(!token)return <Auth onSubmit={submitAuth} busy={busy} msg={msg}/>;
-return <div className="app"><aside className={mobile?'side open':'side'}><div className="brand"><span className="brandicon"><Heart/></span><span>ElderCare<small>WELLNESS COMPANION</small></span><button className="mobileclose" onClick={()=>setMobile(false)}><X/></button></div><div className="navlabel">YOUR SPACE</div>{nav.map(([n,I])=><button key={n} className={'nav '+(page===n?'active':'')} onClick={()=>{setPage(n);setMobile(false)}}><I size={19}/>{n}</button>)}<div className="sidebottom"><div className="privacy"><ShieldCheck/><div><b>Your data, your choice</b><small>Caregiver sharing is optional and controlled by you.</small></div></div><button className="nav" onClick={logout}><LogOut size={18}/>Sign out</button></div></aside><main className="main"><header><button className="hamb" onClick={()=>setMobile(true)}><Menu/></button><div><div className="eyebrow">YOUR PERSONAL WELLNESS SPACE</div><h1>{page==='Dashboard'?'Good day':page}, {user?.name?.split(' ')[0]||'there'} <span className="wave">☀</span></h1></div><div className="profile"><span className="avatar">{user?.name?.[0]?.toUpperCase()}</span><div><b>{user?.name}</b><small>Personal account</small></div></div></header>{msg&&<div className="toast" onClick={()=>setMsg('')}>{msg} <X size={14}/></div>}
+return <div className="app"><style>{`
+:root{
+  --ec-bg:#ead8d6;
+  --ec-surface:#f7e9e5;
+  --ec-surface-2:#f1deda;
+  --ec-pink:#c77f83;
+  --ec-pink-deep:#a95f69;
+  --ec-peach:#e8b7a8;
+  --ec-sage:#547764;
+  --ec-ink:#3f3435;
+  --ec-muted:#8a7777;
+  --ec-border:#e4c9c5;
+}
+html,body,#root{min-height:100%;background:var(--ec-bg)!important}
+body{color:var(--ec-ink)!important}
+.app{background:linear-gradient(135deg,#ead8d6 0%,#e5d5d1 48%,#dce2d7 100%)!important;color:var(--ec-ink)!important}
+.side{background:linear-gradient(180deg,#f4e5e1 0%,#eedbd7 100%)!important;border-right:1px solid var(--ec-border)!important}
+.main{background:transparent!important}
+.main header{background:rgba(247,233,229,.88)!important;border-bottom:1px solid var(--ec-border)!important;backdrop-filter:blur(12px)}
+.brand,.brand small,.navlabel,.eyebrow{color:var(--ec-sage)!important}
+.brandicon{background:#e7c5bf!important;color:var(--ec-pink-deep)!important}
+.nav{color:#6f6262!important;border-radius:13px!important}
+.nav:hover,.nav.active{background:#e7c4c1!important;color:#884e58!important}
+.nav.active{box-shadow:inset 3px 0 0 var(--ec-pink-deep)!important}
+.privacy,.notice{background:#ead9d4!important;border:1px solid #dfc1bb!important;color:#725f60!important;border-radius:16px!important}
+.panel,.formpanel,.stat,.listrow,.empty,.profile,.sectionhead,.main .panel{background:#f7e9e5!important;border:1px solid var(--ec-border)!important;box-shadow:0 8px 24px rgba(105,67,67,.07)!important}
+.panelhead h3,.panel h3,.sectionhead h2{color:#594346!important}
+.panelhead p,.muted,.panel p{color:var(--ec-muted)!important}
+.field input,.field select,.field textarea,input,select,textarea{background:#fbf1ed!important;border:1px solid #dfc2bd!important;color:#493b3d!important;border-radius:12px}
+.field input:focus,.field select:focus,.field textarea:focus,input:focus,select:focus,textarea:focus{outline:2px solid #d69a98!important;border-color:#c77f83!important}
+.primary{background:linear-gradient(135deg,#b96f78,#cf8e85)!important;color:#fff!important;border:0!important;box-shadow:0 7px 18px rgba(169,95,105,.2)!important}
+.primary:hover{filter:brightness(1.04)}
+.softbtn,.iconbtn{background:#ecd2cd!important;color:#925a61!important;border:1px solid #dfbdb8!important}
+.textbtn{color:#a65f69!important}
+.medrow,.listrow,.miniwell{background:#f3e2de!important;border-color:#e4c9c5!important}
+.medicon,.roundicon,.staticon{background:#e9c9c3!important;color:#995d65!important}
+.time,.status.taken{background:#e0e8dc!important;color:#55745f!important}
+.error{background:#f8dedd!important;color:#934c52!important;border:1px solid #e9bdb9!important}
+.toast{background:#f7e9e5!important;color:#594346!important;border:1px solid var(--ec-border)!important}
+.main .panel button:not(.primary){color:#a65f69}
+.main .panel img{filter:saturate(.9)}
+/* Warm the few inline white surfaces while retaining contrast */
+.main .panel [style*="background: rgb(255, 255, 255)"],
+.main section [style*="background: rgb(255, 255, 255)"]{background:#f7e9e5!important}
+@media(max-width:760px){.side{box-shadow:12px 0 35px rgba(80,50,50,.16)!important}}
+`}</style><aside className={mobile?'side open':'side'}><div className="brand"><span className="brandicon"><Heart/></span><span>ElderCare<small>WELLNESS COMPANION</small></span><button className="mobileclose" onClick={()=>setMobile(false)}><X/></button></div><div className="navlabel">YOUR SPACE</div>{nav.map(([n,I])=><button key={n} className={'nav '+(page===n?'active':'')} onClick={()=>{setPage(n);setMobile(false)}}><I size={19}/>{n}</button>)}<div className="sidebottom"><div className="privacy"><ShieldCheck/><div><b>Your data, your choice</b><small>Caregiver sharing is optional and controlled by you.</small></div></div><button className="nav" onClick={logout}><LogOut size={18}/>Sign out</button></div></aside><main className="main"><header><button className="hamb" onClick={()=>setMobile(true)}><Menu/></button><div><div className="eyebrow">YOUR PERSONAL WELLNESS SPACE</div><h1>{page==='Dashboard'?'Good day':page}, {user?.name?.split(' ')[0]||'there'} <span className="wave">☀</span></h1></div><div className="profile"><span className="avatar">{user?.name?.[0]?.toUpperCase()}</span><div><b>{user?.name}</b><small>Personal account</small></div></div></header>{msg&&<div className="toast" onClick={()=>setMsg('')}>{msg} <X size={14}/></div>}
   <button className="primary" onClick={async () => {
   if ("Notification" in window) {
     const permission = await Notification.requestPermission();
@@ -171,10 +216,55 @@ function Auth({onSubmit,busy,msg}){
   const[mode,setMode]=useState('register');
   const isRegister=mode==='register';
   const pageStyle={minHeight:'100vh',background:'linear-gradient(135deg,#dce9df 0%,#e5e7d9 52%,#d2e2d8 100%)',padding:'clamp(18px,4vw,54px)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:'inherit'};
-  const shellStyle={width:'min(1180px,100%)',display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(min(100%,390px),1fr))',background:'#fff',borderRadius:30,overflow:'hidden',boxShadow:'0 28px 90px rgba(38,75,57,.13)',border:'1px solid #e4eee6'};
-  return <div style={pageStyle}>
+  const shellStyle={width:'min(1180px,100%)',display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(min(100%,390px),1fr))',background:'#f7e9e5',borderRadius:30,overflow:'hidden',boxShadow:'0 28px 90px rgba(38,75,57,.13)',border:'1px solid #e4eee6'};
+  return <div style={pageStyle}><style>{`
+:root{
+  --ec-bg:#ead8d6;
+  --ec-surface:#f7e9e5;
+  --ec-surface-2:#f1deda;
+  --ec-pink:#c77f83;
+  --ec-pink-deep:#a95f69;
+  --ec-peach:#e8b7a8;
+  --ec-sage:#547764;
+  --ec-ink:#3f3435;
+  --ec-muted:#8a7777;
+  --ec-border:#e4c9c5;
+}
+html,body,#root{min-height:100%;background:var(--ec-bg)!important}
+body{color:var(--ec-ink)!important}
+.app{background:linear-gradient(135deg,#ead8d6 0%,#e5d5d1 48%,#dce2d7 100%)!important;color:var(--ec-ink)!important}
+.side{background:linear-gradient(180deg,#f4e5e1 0%,#eedbd7 100%)!important;border-right:1px solid var(--ec-border)!important}
+.main{background:transparent!important}
+.main header{background:rgba(247,233,229,.88)!important;border-bottom:1px solid var(--ec-border)!important;backdrop-filter:blur(12px)}
+.brand,.brand small,.navlabel,.eyebrow{color:var(--ec-sage)!important}
+.brandicon{background:#e7c5bf!important;color:var(--ec-pink-deep)!important}
+.nav{color:#6f6262!important;border-radius:13px!important}
+.nav:hover,.nav.active{background:#e7c4c1!important;color:#884e58!important}
+.nav.active{box-shadow:inset 3px 0 0 var(--ec-pink-deep)!important}
+.privacy,.notice{background:#ead9d4!important;border:1px solid #dfc1bb!important;color:#725f60!important;border-radius:16px!important}
+.panel,.formpanel,.stat,.listrow,.empty,.profile,.sectionhead,.main .panel{background:#f7e9e5!important;border:1px solid var(--ec-border)!important;box-shadow:0 8px 24px rgba(105,67,67,.07)!important}
+.panelhead h3,.panel h3,.sectionhead h2{color:#594346!important}
+.panelhead p,.muted,.panel p{color:var(--ec-muted)!important}
+.field input,.field select,.field textarea,input,select,textarea{background:#fbf1ed!important;border:1px solid #dfc2bd!important;color:#493b3d!important;border-radius:12px}
+.field input:focus,.field select:focus,.field textarea:focus,input:focus,select:focus,textarea:focus{outline:2px solid #d69a98!important;border-color:#c77f83!important}
+.primary{background:linear-gradient(135deg,#b96f78,#cf8e85)!important;color:#fff!important;border:0!important;box-shadow:0 7px 18px rgba(169,95,105,.2)!important}
+.primary:hover{filter:brightness(1.04)}
+.softbtn,.iconbtn{background:#ecd2cd!important;color:#925a61!important;border:1px solid #dfbdb8!important}
+.textbtn{color:#a65f69!important}
+.medrow,.listrow,.miniwell{background:#f3e2de!important;border-color:#e4c9c5!important}
+.medicon,.roundicon,.staticon{background:#e9c9c3!important;color:#995d65!important}
+.time,.status.taken{background:#e0e8dc!important;color:#55745f!important}
+.error{background:#f8dedd!important;color:#934c52!important;border:1px solid #e9bdb9!important}
+.toast{background:#f7e9e5!important;color:#594346!important;border:1px solid var(--ec-border)!important}
+.main .panel button:not(.primary){color:#a65f69}
+.main .panel img{filter:saturate(.9)}
+/* Warm the few inline white surfaces while retaining contrast */
+.main .panel [style*="background: rgb(255, 255, 255)"],
+.main section [style*="background: rgb(255, 255, 255)"]{background:#f7e9e5!important}
+@media(max-width:760px){.side{box-shadow:12px 0 35px rgba(80,50,50,.16)!important}}
+`}</style>
     <div style={shellStyle}>
-      <section style={{padding:'clamp(28px,5vw,62px)',backgroundImage:'linear-gradient(90deg,rgba(211,229,215,.96) 0%,rgba(220,231,211,.89) 54%,rgba(214,229,216,.58) 100%),url(/eldercare-care-hands.png)',backgroundSize:'cover',backgroundPosition:'center',backgroundRepeat:'no-repeat',display:'flex',flexDirection:'column',justifyContent:'space-between',gap:34,minHeight:600}}>
+      <section style={{padding:'clamp(28px,5vw,62px)',backgroundImage:'linear-gradient(90deg,rgba(211,229,215,.78) 0%,rgba(220,231,211,.66) 54%,rgba(214,229,216,.32) 100%),url(/eldercare-care-hands.png)',backgroundSize:'cover',backgroundPosition:'center',backgroundRepeat:'no-repeat',display:'flex',flexDirection:'column',justifyContent:'space-between',gap:34,minHeight:600}}>
         <div>
           <div style={{display:'flex',alignItems:'center',gap:12,color:'#214c3c',fontSize:25,fontWeight:800,letterSpacing:'-.7px'}}>
             <span style={{width:48,height:48,borderRadius:16,display:'grid',placeItems:'center',background:'#fff',boxShadow:'0 6px 20px #234b3514'}}><Heart size={25}/></span>
@@ -231,7 +321,7 @@ function Dashboard({data,setPage,user}){
     {icon:ClipboardList,label:'Health records',value:data.measurements.length,detail:'Measurements saved',page:'Health records'}
   ];
   return <div style={{display:'grid',gap:22}}>
-    <section style={{position:'relative',overflow:'hidden',borderRadius:26,padding:'clamp(25px,4vw,42px)',backgroundImage:'linear-gradient(100deg,rgba(29,70,51,.97) 0%,rgba(44,91,64,.90) 58%,rgba(47,91,65,.58) 100%),url(/eldercare-family-walk.png)',backgroundSize:'cover',backgroundPosition:'center 42%',color:'#fff',boxShadow:'0 16px 38px #244f3a20'}}>
+    <section style={{position:'relative',overflow:'hidden',borderRadius:26,padding:'clamp(25px,4vw,42px)',backgroundImage:'linear-gradient(100deg,rgba(29,70,51,.86) 0%,rgba(44,91,64,.72) 58%,rgba(47,91,65,.38) 100%),url(/eldercare-family-walk.png)',backgroundSize:'cover',backgroundPosition:'center 42%',color:'#fff',boxShadow:'0 16px 38px #244f3a20'}}>
       <div style={{position:'absolute',right:-35,top:-80,width:300,height:300,borderRadius:'50%',border:'1px solid #ffffff25'}}></div>
       <div style={{position:'absolute',right:45,bottom:-100,width:220,height:220,borderRadius:'50%',background:'#ffffff0c'}}></div>
       <div style={{position:'relative',zIndex:1,maxWidth:650}}>
