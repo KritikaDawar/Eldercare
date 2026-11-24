@@ -44,13 +44,23 @@ app = Flask(__name__)
 app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "dev-only-change-me")
 app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "dev-jwt-change-me")
 db_url = os.getenv("DATABASE_URL", "sqlite:///eldercare.db")
+
 if db_url.startswith("postgres://"):
-    db_url = db_url.replace("postgres://", "postgresql://", 1)
-    app.config["SQLALCHEMY_DATABASE_URI"] = db_url
-app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
-    "poolclass": NullPool,
-    "connect_args": {"sslmode": "require"}
-}
+    db_url = db_url.replace(
+        "postgres://", "postgresql+psycopg://", 1
+    )
+elif db_url.startswith("postgresql://"):
+    db_url = db_url.replace(
+        "postgresql://", "postgresql+psycopg://", 1
+    )
+
+app.config["SQLALCHEMY_DATABASE_URI"] = db_url
+
+if db_url.startswith("postgresql"):
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+        "poolclass": NullPool,
+        "connect_args": {"sslmode": "require"}
+    }
 CORS(app, resources={r"/*": {"origins": [
     "https://eldercare-cu8d.vercel.app",
     "http://localhost:5173"
