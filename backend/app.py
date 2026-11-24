@@ -3,8 +3,9 @@ from datetime import datetime, date, time, timedelta, timezone
 import json
 import urllib.request
 import urllib.error
+import math
 from functools import wraps
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from sqlalchemy.pool import NullPool
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
@@ -123,6 +124,41 @@ class Measurement(db.Model):
     value = db.Column(db.String(80), nullable=False)
     unit = db.Column(db.String(30), nullable=False)
     recorded_at = db.Column(db.String(32), nullable=False)
+
+class MedicalDocument(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    title = db.Column(db.String(180), nullable=False)
+    category = db.Column(db.String(40), nullable=False)
+    document_date = db.Column(db.String(10), nullable=False)
+    notes = db.Column(db.String(500), default="")
+    original_filename = db.Column(db.String(180), nullable=False)
+    mime_type = db.Column(db.String(80), nullable=False)
+    file_data = db.Column(db.LargeBinary, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
+class MedicalHistory(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    entry_type = db.Column(db.String(40), nullable=False)
+    title = db.Column(db.String(180), nullable=False)
+    details = db.Column(db.String(2000), default="")
+    entry_date = db.Column(db.String(10), nullable=False)
+    doctor_name = db.Column(db.String(150), default="")
+    hospital_name = db.Column(db.String(150), default="")
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
+class MedicalExpense(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    category = db.Column(db.String(40), nullable=False)
+    amount = db.Column(db.Numeric(10, 2), nullable=False)
+    expense_date = db.Column(db.String(10), nullable=False)
+    description = db.Column(db.String(300), default="")
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
 
 class Permission(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -328,7 +364,7 @@ def permissions():
     d=request.get_json() or {}
     email=d.get("caregiver_email","").strip().lower()
     scopes=d.get("scopes",[])
-    allowed={"medications","manage_medications","activity","health"}
+    allowed={"medications","manage_medications","activity","health","medical_records","expenses"}
     scopes=set(scopes)
     if "manage_medications" in scopes:
         scopes.add("medications")
@@ -366,6 +402,11 @@ def caregiver_summary():
         out["activities"]=[{"activity":x.activity,"minutes":x.minutes,"activity_date":x.activity_date} for x in Activity.query.filter_by(user_id=owner.id).order_by(Activity.activity_date.desc()).limit(20).all()]
     if "health" in scopes:
         out["measurements"]=[{"kind":x.kind,"value":x.value,"unit":x.unit,"recorded_at":x.recorded_at} for x in Measurement.query.filter_by(user_id=owner.id).order_by(Measurement.recorded_at.desc()).limit(20).all()]
+    if "medical_records" in scopes:
+        out["medical_documents"]=[{"id":x.id,"title":x.title,"category":x.category,"document_date":x.document_date,"notes":x.notes,"original_filename":x.original_filename} for x in MedicalDocument.query.filter_by(user_id=owner.id).order_by(MedicalDocument.document_date.desc()).limit(50).all()]
+        out["medical_history"]=[{"id":x.id,"entry_type":x.entry_type,"title":x.title,"details":x.details,"entry_date":x.entry_date,"doctor_name":x.doctor_name,"hospital_name":x.hospital_name} for x in MedicalHistory.query.filter_by(user_id=owner.id).order_by(MedicalHistory.entry_date.desc()).limit(50).all()]
+    if "expenses" in scopes:
+        out["medical_expenses"]=[{"id":x.id,"category":x.category,"amount":str(x.amount),"expense_date":x.expense_date,"description":x.description} for x in MedicalExpense.query.filter_by(user_id=owner.id).order_by(MedicalExpense.expense_date.desc()).limit(100).all()]
     return jsonify(out)
 
 def caregiver_grant(owner_email):
@@ -443,6 +484,180 @@ def caregiver_log_dose():
     db.session.add(CareActionLog(owner_id=owner.id,caregiver_id=caregiver.id,medication_id=m.id,action="dose_logged",details=f"{m.name}: marked {status} for {scheduled_for}"))
     db.session.commit()
     return jsonify({"id":dose.id,"medication_id":m.id,"medication":m.name,"scheduled_for":dose.scheduled_for,"status":dose.status}),201
+
+
+# Medical document uploads are stored in PostgreSQL for this MVP.
+# Keep the limit small because serverless request bodies and database storage are finite.
+MAX_MEDICAL_FILE_BYTES = 2 * 1024 * 1024
+ALLOWED_MEDICAL_MIME_TYPES = {
+    "application/pdf", "image/jpeg", "image/png", "image/webp"
+}
+ALLOWED_MEDICAL_CATEGORIES = {"lab_report", "imaging", "prescription", "other"}
+ALLOWED_HISTORY_TYPES = {"condition", "illness", "surgery", "allergy", "event", "other"}
+ALLOWED_EXPENSE_CATEGORIES = {"consultation", "medicine", "diagnostic_test", "hospital", "treatment", "other"}
+
+
+@app.route("/api/medical-documents", methods=["GET", "POST"])
+@jwt_required()
+def medical_documents():
+    u = current_user()
+    if request.method == "GET":
+        rows = MedicalDocument.query.filter_by(user_id=u.id).order_by(MedicalDocument.document_date.desc()).all()
+        return jsonify([{"id":x.id,"title":x.title,"category":x.category,"document_date":x.document_date,"notes":x.notes,"original_filename":x.original_filename,"mime_type":x.mime_type} for x in rows])
+
+    upload = request.files.get("file")
+    title = (request.form.get("title") or "").strip()
+    category = (request.form.get("category") or "other").strip()
+    document_date = (request.form.get("document_date") or date.today().isoformat()).strip()
+    notes = (request.form.get("notes") or "").strip()[:500]
+    if not upload or not upload.filename:
+        return fail("Choose a PDF or image file to upload.")
+    if not title:
+        return fail("Document title is required.")
+    if category not in ALLOWED_MEDICAL_CATEGORIES:
+        return fail("Choose a valid document category.")
+    try:
+        datetime.strptime(document_date, "%Y-%m-%d")
+    except ValueError:
+        return fail("Document date must be a valid date.")
+    mime_type = (upload.mimetype or "").lower()
+    if mime_type not in ALLOWED_MEDICAL_MIME_TYPES:
+        return fail("Only PDF, JPG, PNG and WEBP files are allowed.")
+    file_data = upload.read(MAX_MEDICAL_FILE_BYTES + 1)
+    if not file_data:
+        return fail("The selected file is empty.")
+    signatures = {
+        "application/pdf": file_data.startswith(b"%PDF-"),
+        "image/jpeg": file_data.startswith(b"\\xff\\xd8\\xff"),
+        "image/png": file_data.startswith(b"\\x89PNG\\r\\n\\x1a\\n"),
+        "image/webp": len(file_data) >= 12 and file_data[:4] == b"RIFF" and file_data[8:12] == b"WEBP"
+    }
+    if not signatures.get(mime_type, False):
+        return fail("The file content does not match its selected file type.")
+    if len(file_data) > MAX_MEDICAL_FILE_BYTES:
+        return fail("File is too large. Please upload a file smaller than 2 MB.")
+    original_filename = os.path.basename(upload.filename).replace("\x00", "")[:180]
+    row = MedicalDocument(user_id=u.id, title=title[:180], category=category,
+        document_date=document_date, notes=notes, original_filename=original_filename,
+        mime_type=mime_type, file_data=file_data)
+    db.session.add(row)
+    db.session.commit()
+    return jsonify({"id":row.id,"title":row.title,"category":row.category,"document_date":row.document_date,
+        "notes":row.notes,"original_filename":row.original_filename,"mime_type":row.mime_type}), 201
+
+
+@app.get("/api/medical-documents/<int:item_id>/download")
+@jwt_required()
+def download_medical_document(item_id):
+    row = MedicalDocument.query.filter_by(id=item_id, user_id=current_user().id).first()
+    if not row:
+        return fail("Medical document not found.", 404)
+    from io import BytesIO
+    response = send_file(BytesIO(row.file_data), mimetype=row.mime_type,
+        as_attachment=True, download_name=row.original_filename)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@app.delete("/api/medical-documents/<int:item_id>")
+@jwt_required()
+def delete_medical_document(item_id):
+    row = MedicalDocument.query.filter_by(id=item_id, user_id=current_user().id).first()
+    if not row:
+        return fail("Medical document not found.", 404)
+    db.session.delete(row)
+    db.session.commit()
+    return jsonify({"message":"Medical document deleted."})
+
+
+@app.get("/api/caregiver/medical-documents/<int:item_id>/download")
+@jwt_required()
+def caregiver_download_medical_document(item_id):
+    caregiver = current_user()
+    owner_email = request.args.get("owner_email", "").strip().lower()
+    owner = User.query.filter_by(email=owner_email).first()
+    if not owner:
+        return fail("Owner not found.", 404)
+    grant = Permission.query.filter_by(owner_id=owner.id, caregiver_email=caregiver.email, revoked_at=None).first()
+    if not grant or "medical_records" not in set(grant.scopes.split(",")):
+        return fail("No active permission to view medical records.", 403)
+    row = MedicalDocument.query.filter_by(id=item_id, user_id=owner.id).first()
+    if not row:
+        return fail("Medical document not found.", 404)
+    from io import BytesIO
+    response = send_file(BytesIO(row.file_data), mimetype=row.mime_type,
+        as_attachment=True, download_name=row.original_filename)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@app.route("/api/medical-history", methods=["GET", "POST"])
+@jwt_required()
+def medical_history():
+    u = current_user()
+    if request.method == "GET":
+        rows = MedicalHistory.query.filter_by(user_id=u.id).order_by(MedicalHistory.entry_date.desc()).all()
+        return jsonify([{"id":x.id,"entry_type":x.entry_type,"title":x.title,"details":x.details,
+            "entry_date":x.entry_date,"doctor_name":x.doctor_name,"hospital_name":x.hospital_name} for x in rows])
+    d = request.get_json() or {}
+    entry_type = str(d.get("entry_type","other"))
+    title = str(d.get("title","")).strip()
+    entry_date = str(d.get("entry_date") or date.today().isoformat())
+    if entry_type not in ALLOWED_HISTORY_TYPES or not title:
+        return fail("Choose a valid history type and enter a title.")
+    try:
+        datetime.strptime(entry_date, "%Y-%m-%d")
+    except ValueError:
+        return fail("Enter a valid history date.")
+    row = MedicalHistory(user_id=u.id, entry_type=entry_type, title=title[:180],
+        details=str(d.get("details",""))[:2000], entry_date=entry_date,
+        doctor_name=str(d.get("doctor_name",""))[:150], hospital_name=str(d.get("hospital_name",""))[:150])
+    db.session.add(row); db.session.commit()
+    return jsonify({"id":row.id,"entry_type":row.entry_type,"title":row.title,"details":row.details,
+        "entry_date":row.entry_date,"doctor_name":row.doctor_name,"hospital_name":row.hospital_name}), 201
+
+
+@app.delete("/api/medical-history/<int:item_id>")
+@jwt_required()
+def delete_medical_history(item_id):
+    row = MedicalHistory.query.filter_by(id=item_id, user_id=current_user().id).first()
+    if not row: return fail("Medical history entry not found.", 404)
+    db.session.delete(row); db.session.commit()
+    return jsonify({"message":"Medical history entry deleted."})
+
+
+@app.route("/api/medical-expenses", methods=["GET", "POST"])
+@jwt_required()
+def medical_expenses():
+    u = current_user()
+    if request.method == "GET":
+        rows = MedicalExpense.query.filter_by(user_id=u.id).order_by(MedicalExpense.expense_date.desc()).all()
+        return jsonify([{"id":x.id,"category":x.category,"amount":str(x.amount),"expense_date":x.expense_date,"description":x.description} for x in rows])
+    d = request.get_json() or {}
+    category = str(d.get("category","other"))
+    description = str(d.get("description","")).strip()
+    expense_date = str(d.get("expense_date") or date.today().isoformat())
+    try:
+        amount = float(d.get("amount", 0))
+        datetime.strptime(expense_date, "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return fail("Enter a valid amount and date.")
+    if category not in ALLOWED_EXPENSE_CATEGORIES or not math.isfinite(amount) or amount <= 0 or amount > 10000000:
+        return fail("Choose a valid category and enter an amount greater than zero.")
+    row = MedicalExpense(user_id=u.id, category=category, amount=amount,
+        expense_date=expense_date, description=description[:300])
+    db.session.add(row); db.session.commit()
+    return jsonify({"id":row.id,"category":row.category,"amount":str(row.amount),
+        "expense_date":row.expense_date,"description":row.description}), 201
+
+
+@app.delete("/api/medical-expenses/<int:item_id>")
+@jwt_required()
+def delete_medical_expense(item_id):
+    row = MedicalExpense.query.filter_by(id=item_id, user_id=current_user().id).first()
+    if not row: return fail("Medical expense not found.", 404)
+    db.session.delete(row); db.session.commit()
+    return jsonify({"message":"Medical expense deleted."})
 
 
 @app.post("/api/notifications/run-reminders")
