@@ -1,839 +1,758 @@
-import os
-from datetime import datetime, date, time, timedelta, timezone
-import json
-import urllib.request
-import urllib.error
-import math
-import re
-from functools import wraps
-from flask import Flask, request, jsonify, send_file
-from sqlalchemy.pool import NullPool
-from flask_cors import CORS
-from flask_sqlalchemy import SQLAlchemy
-from flask_bcrypt import Bcrypt
-from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
-from dotenv import load_dotenv
-def send_brevo_email(to_email, subject, html_content):
-    api_key = os.getenv("BREVO_API_KEY")
-    if not api_key:
-        raise RuntimeError("BREVO_API_KEY is not configured")
-
-    payload = {
-        "sender": {
-            "name": "ElderCare",
-            "email": "eldercarebu@gmail.com"
-        },
-        "to": [{"email": to_email}],
-        "subject": subject,
-        "htmlContent": html_content
-    }
-
-    request = urllib.request.Request(
-        "https://api.brevo.com/v3/smtp/email",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "accept": "application/json",
-            "api-key": api_key,
-            "content-type": "application/json"
-        },
-        method="POST"
-    )
-
-    with urllib.request.urlopen(request, timeout=15) as response:
-        return response.status
-load_dotenv()
-app = Flask(__name__)
-app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "dev-only-change-me")
-app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "dev-jwt-change-me")
-db_url = os.getenv("DATABASE_URL", "sqlite:///eldercare.db")
-
-if db_url.startswith("postgres://"):
-    db_url = db_url.replace(
-        "postgres://", "postgresql+psycopg://", 1
-    )
-elif db_url.startswith("postgresql://"):
-    db_url = db_url.replace(
-        "postgresql://", "postgresql+psycopg://", 1
-    )
-
-app.config["SQLALCHEMY_DATABASE_URI"] = db_url
-
-if db_url.startswith("postgresql"):
-    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
-        "poolclass": NullPool,
-        "connect_args": {"sslmode": "require"}
-    }
-CORS(app, resources={r"/*": {"origins": [
-    "https://eldercare-cu8d.vercel.app",
-    "http://localhost:5173"
-]}})
-db = SQLAlchemy(app)
-bcrypt = Bcrypt(app)
-jwt = JWTManager(app)
-
-class User(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), nullable=False)
-    email = db.Column(db.String(180), unique=True, nullable=False, index=True)
-    password_hash = db.Column(db.String(128), nullable=False)
-
-class Medication(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
-    name = db.Column(db.String(120), nullable=False)
-    dosage = db.Column(db.String(80), nullable=False)
-    instructions = db.Column(db.String(250), default="")
-    schedule_time = db.Column(db.String(5), nullable=False)  # HH:MM, local time
-    active = db.Column(db.Boolean, default=True)
-
-class Dose(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    medication_id = db.Column(db.Integer, db.ForeignKey("medication.id"), nullable=False, index=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
-    scheduled_for = db.Column(db.String(32), nullable=False)
-    status = db.Column(db.String(12), default="pending")
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-
-class ReminderLog(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    medication_id = db.Column(
-        db.Integer,
-        db.ForeignKey("medication.id"),
-        nullable=False
-    )
-    scheduled_for = db.Column(db.String(16), nullable=False)
-
-    __table_args__ = (
-        db.UniqueConstraint(
-            "medication_id",
-            "scheduled_for",
-            name="uq_reminder_medication_schedule"
-        ),
-    )
-class Activity(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
-    activity = db.Column(db.String(120), nullable=False)
-    minutes = db.Column(db.Integer, nullable=False)
-    activity_date = db.Column(db.String(10), nullable=False)
-
-class Measurement(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
-    kind = db.Column(db.String(30), nullable=False)  # blood_pressure, cholesterol, weight
-    value = db.Column(db.String(80), nullable=False)
-    unit = db.Column(db.String(30), nullable=False)
-    recorded_at = db.Column(db.String(32), nullable=False)
-
-class MedicalDocument(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
-    title = db.Column(db.String(180), nullable=False)
-    category = db.Column(db.String(40), nullable=False)
-    document_date = db.Column(db.String(10), nullable=False)
-    notes = db.Column(db.String(500), default="")
-    original_filename = db.Column(db.String(180), nullable=False)
-    mime_type = db.Column(db.String(80), nullable=False)
-    file_data = db.Column(db.LargeBinary, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-
-
-class MedicalExtraction(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    document_id = db.Column(db.Integer, db.ForeignKey("medical_document.id"), nullable=False, index=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
-    extracted_text = db.Column(db.Text, nullable=False, default="")
-    extracted_data = db.Column(db.Text, nullable=False, default="{}")
-    status = db.Column(db.String(30), nullable=False, default="needs_review")
-    warning = db.Column(db.String(500), default="")
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-
-
-class MedicalHistory(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
-    entry_type = db.Column(db.String(40), nullable=False)
-    title = db.Column(db.String(180), nullable=False)
-    details = db.Column(db.String(2000), default="")
-    entry_date = db.Column(db.String(10), nullable=False)
-    doctor_name = db.Column(db.String(150), default="")
-    hospital_name = db.Column(db.String(150), default="")
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-
-
-class MedicalExpense(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
-    category = db.Column(db.String(40), nullable=False)
-    amount = db.Column(db.Numeric(10, 2), nullable=False)
-    expense_date = db.Column(db.String(10), nullable=False)
-    description = db.Column(db.String(300), default="")
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-
-
-class Permission(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    owner_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
-    caregiver_email = db.Column(db.String(180), nullable=False, index=True)
-    scopes = db.Column(db.String(200), nullable=False)  # medications, manage_medications, activity, health
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    revoked_at = db.Column(db.DateTime, nullable=True)
-
-
-class CareActionLog(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    owner_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
-    caregiver_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
-    medication_id = db.Column(db.Integer, db.ForeignKey("medication.id"), nullable=True, index=True)
-    action = db.Column(db.String(40), nullable=False)
-    details = db.Column(db.String(500), default="")
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-
-def current_user():
-    return db.session.get(User, int(get_jwt_identity()))
-
-def fail(message, status=400):
-    return jsonify({"error": message}), status
-
-@app.get("/api/health")
-def health():
-    return jsonify({"status": "ok", "service": "ElderCare API"})
-
-@app.post("/api/auth/register")
-def register():
-    data = request.get_json() or {}
-    name, email, password = data.get("name", "").strip(), data.get("email", "").strip().lower(), data.get("password", "")
-    if not name or "@" not in email or len(password) < 8:
-        return fail("Provide a name, valid email and password of at least 8 characters.")
-    if User.query.filter_by(email=email).first():
-        return fail("An account with this email already exists.", 409)
-    user = User(name=name, email=email, password_hash=bcrypt.generate_password_hash(password).decode())
-    db.session.add(user); db.session.commit()
-    token = create_access_token(identity=str(user.id), expires_delta=timedelta(hours=12))
-    return jsonify({"token": token, "user": {"id": user.id, "name": user.name, "email": user.email}}), 201
-
-@app.post("/api/auth/login")
-def login():
-    data = request.get_json() or {}
-    user = User.query.filter_by(email=data.get("email", "").strip().lower()).first()
-    if not user or not bcrypt.check_password_hash(user.password_hash, data.get("password", "")):
-        return fail("Invalid email or password.", 401)
-    token = create_access_token(identity=str(user.id), expires_delta=timedelta(hours=12))
-    return jsonify({"token": token, "user": {"id": user.id, "name": user.name, "email": user.email}})
-
-@app.get("/api/me")
-@jwt_required()
-def me():
-    u = current_user()
-    return jsonify({"id": u.id, "name": u.name, "email": u.email})
-
-def owned(model, item_id, user_id):
-    item = db.session.get(model, item_id)
-    return item if item and getattr(item, "user_id", None) == user_id else None
-@app.post("/api/notifications/test-email")
-@jwt_required()
-def test_email():
-    user = current_user()
-
-    try:
-        send_brevo_email(
-            user.email,
-            "ElderCare test email",
-            "<h2>Email setup successful!</h2><p>ElderCare email notifications are connected.</p>"
-        )
-        return jsonify({"message": "Test email sent successfully."})
-
-    except urllib.error.HTTPError:
-        return jsonify({"error": "Brevo could not send the email. Please check your Brevo settings."}), 502
-
-    except Exception:
-        return jsonify({"error": "Unable to send the test email. Please check the backend configuration."}), 500
-@app.post("/api/emergency/sos")
-@jwt_required()
-def emergency_sos():
-    owner = current_user()
-    grants = Permission.query.filter_by(owner_id=owner.id, revoked_at=None).all()
-    recipients = sorted({p.caregiver_email.strip().lower() for p in grants if p.caregiver_email})
-    if not recipients:
-        return fail("No active caregiver contacts are linked to this account. Add a caregiver in Caregiver sharing first.", 400)
-
-    sent = 0
-    failed = 0
-    alert_time = datetime.now().astimezone().strftime("%d %b %Y, %I:%M %p %Z")
-    safe_name = owner.name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    safe_email = owner.email.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    subject = "Emergency SOS alert from ElderCare"
-    html = (
-        "<h2>Emergency SOS alert</h2>"
-        f"<p><b>{safe_name}</b> has triggered the SOS alert in ElderCare.</p>"
-        f"<p>Account: {safe_email}<br>Time: {alert_time}</p>"
-        "<p>Please contact them immediately and check whether they need help.</p>"
-        "<p><b>Important:</b> This email is an alert to a caregiver. ElderCare has not contacted emergency services.</p>"
-    )
-    for email in recipients:
-        try:
-            send_brevo_email(email, subject, html)
-            sent += 1
-        except Exception:
-            failed += 1
-    return jsonify({
-        "message": "SOS alert sent to linked caregiver contacts." if sent else "ElderCare could not send the SOS alert.",
-        "emails_sent": sent,
-        "failed": failed,
-        "emergency_services_contacted": False
-    }), (200 if sent else 502)
-
-
-@app.route("/api/medications", methods=["GET", "POST"])
-@jwt_required()
-def medications():
-    u = current_user()
-    if request.method == "GET":
-        return jsonify([{"id":m.id,"name":m.name,"dosage":m.dosage,"instructions":m.instructions,"schedule_time":m.schedule_time,"active":m.active} for m in Medication.query.filter_by(user_id=u.id).order_by(Medication.schedule_time).all()])
-    d = request.get_json() or {}
-    if not all(d.get(k) for k in ("name","dosage","schedule_time")):
-        return fail("Name, dosage and schedule time are required.")
-    if len(d["schedule_time"]) != 5 or d["schedule_time"][2] != ":":
-        return fail("Schedule time must use HH:MM.")
-    m = Medication(user_id=u.id, name=d["name"].strip(), dosage=d["dosage"].strip(), instructions=d.get("instructions",""), schedule_time=d["schedule_time"])
-    db.session.add(m); db.session.commit()
-    return jsonify({"id":m.id,"name":m.name,"dosage":m.dosage,"instructions":m.instructions,"schedule_time":m.schedule_time,"active":m.active}), 201
-
-@app.route("/api/medications/<int:item_id>", methods=["PATCH","DELETE"])
-@jwt_required()
-def medication_detail(item_id):
-    m = owned(Medication, item_id, current_user().id)
-    if not m: return fail("Medication not found.",404)
-    if request.method == "DELETE":
-        Dose.query.filter_by(medication_id=m.id).delete()
-        db.session.delete(m); db.session.commit(); return jsonify({"message":"Medication deleted."})
-    d=request.get_json() or {}
-    for k in ("name","dosage","instructions","schedule_time","active"):
-        if k in d: setattr(m,k,d[k])
-    db.session.commit()
-    return jsonify({"id":m.id,"name":m.name,"dosage":m.dosage,"instructions":m.instructions,"schedule_time":m.schedule_time,"active":m.active})
-
-@app.route("/api/doses", methods=["GET","POST"])
-@jwt_required()
-def doses():
-    u=current_user()
-    if request.method=="GET":
-        rows=Dose.query.filter_by(user_id=u.id).order_by(Dose.scheduled_for.desc()).limit(100).all()
-        return jsonify([{"id":x.id,"medication_id":x.medication_id,"medication":db.session.get(Medication,x.medication_id).name,"scheduled_for":x.scheduled_for,"status":x.status} for x in rows])
-    d=request.get_json() or {}
-    m=owned(Medication,d.get("medication_id"),u.id) if d.get("medication_id") else None
-    if not m: return fail("Choose one of your medications.")
-    status=d.get("status","pending")
-    if status not in ("pending","taken","skipped","missed"): return fail("Invalid dose status.")
-    x=Dose(user_id=u.id,medication_id=m.id,scheduled_for=d.get("scheduled_for",datetime.now().isoformat(timespec="minutes")),status=status)
-    db.session.add(x); db.session.commit()
-    return jsonify({"id":x.id,"medication_id":m.id,"medication":m.name,"scheduled_for":x.scheduled_for,"status":x.status}),201
-
-@app.patch("/api/doses/<int:item_id>")
-@jwt_required()
-def dose_update(item_id):
-    x=owned(Dose,item_id,current_user().id)
-    if not x: return fail("Dose not found.",404)
-    status=(request.get_json() or {}).get("status")
-    if status not in ("taken","skipped","missed","pending"): return fail("Invalid dose status.")
-    x.status=status; x.updated_at=datetime.utcnow(); db.session.commit()
-    return jsonify({"id":x.id,"status":x.status})
-
-@app.route("/api/activities", methods=["GET","POST"])
-@jwt_required()
-def activities():
-    u=current_user()
-    if request.method=="GET":
-        return jsonify([{"id":x.id,"activity":x.activity,"minutes":x.minutes,"activity_date":x.activity_date} for x in Activity.query.filter_by(user_id=u.id).order_by(Activity.activity_date.desc()).all()])
-    d=request.get_json() or {}
-    try: minutes=int(d.get("minutes",0))
-    except (TypeError,ValueError): return fail("Minutes must be a whole number.")
-    if not d.get("activity") or minutes<1 or minutes>1440: return fail("Activity and minutes between 1 and 1440 are required.")
-    x=Activity(user_id=u.id,activity=d["activity"],minutes=minutes,activity_date=d.get("activity_date",date.today().isoformat()))
-    db.session.add(x); db.session.commit()
-    return jsonify({"id":x.id,"activity":x.activity,"minutes":x.minutes,"activity_date":x.activity_date}),201
-
-@app.route("/api/measurements", methods=["GET","POST"])
-@jwt_required()
-def measurements():
-    u=current_user()
-    if request.method=="GET":
-        return jsonify([{"id":x.id,"kind":x.kind,"value":x.value,"unit":x.unit,"recorded_at":x.recorded_at} for x in Measurement.query.filter_by(user_id=u.id).order_by(Measurement.recorded_at.desc()).all()])
-    d=request.get_json() or {}
-    if d.get("kind") not in ("blood_pressure","cholesterol","weight") or not d.get("value") or not d.get("unit"):
-        return fail("Select a supported measurement and provide value and unit.")
-    x=Measurement(user_id=u.id,kind=d["kind"],value=str(d["value"]),unit=d["unit"],recorded_at=d.get("recorded_at",datetime.now().isoformat(timespec="minutes")))
-    db.session.add(x); db.session.commit()
-    return jsonify({"id":x.id,"kind":x.kind,"value":x.value,"unit":x.unit,"recorded_at":x.recorded_at}),201
-
-@app.route("/api/permissions", methods=["GET","POST"])
-@jwt_required()
-def permissions():
-    u=current_user()
-    if request.method=="GET":
-        return jsonify([{"id":p.id,"caregiver_email":p.caregiver_email,"scopes":p.scopes.split(","),"active":p.revoked_at is None} for p in Permission.query.filter_by(owner_id=u.id).all()])
-    d=request.get_json() or {}
-    email=d.get("caregiver_email","").strip().lower()
-    scopes=d.get("scopes",[])
-    allowed={"medications","manage_medications","activity","health","medical_records","expenses"}
-    scopes=set(scopes)
-    if "manage_medications" in scopes:
-        scopes.add("medications")
-    if "@" not in email or not scopes or not scopes.issubset(allowed): return fail("Provide caregiver email and valid sharing scopes.")
-    p=Permission(owner_id=u.id,caregiver_email=email,scopes=",".join(sorted(scopes)))
-    db.session.add(p); db.session.commit()
-    return jsonify({"id":p.id,"caregiver_email":p.caregiver_email,"scopes":p.scopes.split(","),"active":True}),201
-
-@app.delete("/api/permissions/<int:item_id>")
-@jwt_required()
-def revoke_permission(item_id):
-    p=Permission.query.filter_by(id=item_id,owner_id=current_user().id).first()
-    if not p: return fail("Permission not found.",404)
-    p.revoked_at=datetime.utcnow(); db.session.commit()
-    return jsonify({"message":"Permission revoked."})
-
-@app.get("/api/caregiver/summary")
-@jwt_required()
-def caregiver_summary():
-    caregiver=current_user()
-    owner_email=request.args.get("owner_email","").strip().lower()
-    owner=User.query.filter_by(email=owner_email).first()
-    if not owner: return fail("Owner not found.",404)
-    grant=Permission.query.filter_by(owner_id=owner.id,caregiver_email=caregiver.email,revoked_at=None).first()
-    if not grant: return fail("No active caregiver permission for this account.",403)
-    scopes=set(grant.scopes.split(","))
-    out={"owner":{"name":owner.name,"email":owner.email},"shared_scopes":sorted(scopes)}
-    if "medications" in scopes:
-        out["medications"]=[{"id":m.id,"name":m.name,"dosage":m.dosage,"instructions":m.instructions,"schedule_time":m.schedule_time,"active":m.active} for m in Medication.query.filter_by(user_id=owner.id).order_by(Medication.schedule_time).all()]
-        out["recent_doses"]=[{"id":x.id,"medication_id":x.medication_id,"medication":db.session.get(Medication,x.medication_id).name,"scheduled_for":x.scheduled_for,"status":x.status} for x in Dose.query.filter_by(user_id=owner.id).order_by(Dose.scheduled_for.desc()).limit(20).all()]
-        out["can_manage_medications"]="manage_medications" in scopes
-        if out["can_manage_medications"]:
-            out["care_actions"]=[{"action":a.action,"details":a.details,"created_at":a.created_at.isoformat(timespec="minutes"),"caregiver":db.session.get(User,a.caregiver_id).name if db.session.get(User,a.caregiver_id) else "Caregiver"} for a in CareActionLog.query.filter_by(owner_id=owner.id).order_by(CareActionLog.created_at.desc()).limit(20).all()]
-    if "activity" in scopes:
-        out["activities"]=[{"activity":x.activity,"minutes":x.minutes,"activity_date":x.activity_date} for x in Activity.query.filter_by(user_id=owner.id).order_by(Activity.activity_date.desc()).limit(20).all()]
-    if "health" in scopes:
-        out["measurements"]=[{"kind":x.kind,"value":x.value,"unit":x.unit,"recorded_at":x.recorded_at} for x in Measurement.query.filter_by(user_id=owner.id).order_by(Measurement.recorded_at.desc()).limit(20).all()]
-    if "medical_records" in scopes:
-        out["medical_documents"]=[{"id":x.id,"title":x.title,"category":x.category,"document_date":x.document_date,"notes":x.notes,"original_filename":x.original_filename} for x in MedicalDocument.query.filter_by(user_id=owner.id).order_by(MedicalDocument.document_date.desc()).limit(50).all()]
-        out["medical_history"]=[{"id":x.id,"entry_type":x.entry_type,"title":x.title,"details":x.details,"entry_date":x.entry_date,"doctor_name":x.doctor_name,"hospital_name":x.hospital_name} for x in MedicalHistory.query.filter_by(user_id=owner.id).order_by(MedicalHistory.entry_date.desc()).limit(50).all()]
-    if "expenses" in scopes:
-        out["medical_expenses"]=[{"id":x.id,"category":x.category,"amount":str(x.amount),"expense_date":x.expense_date,"description":x.description} for x in MedicalExpense.query.filter_by(user_id=owner.id).order_by(MedicalExpense.expense_date.desc()).limit(100).all()]
-    return jsonify(out)
-
-def caregiver_grant(owner_email):
-    caregiver=current_user()
-    owner=User.query.filter_by(email=(owner_email or "").strip().lower()).first()
-    if not owner:
-        return None, None, fail("Owner not found.",404)
-    grant=Permission.query.filter_by(owner_id=owner.id,caregiver_email=caregiver.email,revoked_at=None).first()
-    if not grant:
-        return None, None, fail("No active caregiver permission for this account.",403)
-    scopes=set(grant.scopes.split(","))
-    if "medications" not in scopes or "manage_medications" not in scopes:
-        return None, None, fail("This caregiver has view-only medication access.",403)
-    return owner, caregiver, None
-
-
-@app.post("/api/caregiver/medications")
-@jwt_required()
-def caregiver_add_medication():
-    d=request.get_json() or {}
-    owner, caregiver, error=caregiver_grant(d.get("owner_email"))
-    if error: return error
-    name=str(d.get("name","")).strip()
-    dosage=str(d.get("dosage","")).strip()
-    schedule_time=str(d.get("schedule_time","")).strip()
-    if not name or not dosage:
-        return fail("Medicine name and the prescribed dosage shown on the prescription are required.")
-    try:
-        datetime.strptime(schedule_time,"%H:%M")
-    except ValueError:
-        return fail("Reminder time must use HH:MM.")
-    m=Medication(user_id=owner.id,name=name,dosage=dosage,instructions=str(d.get("instructions",""))[:250],schedule_time=schedule_time,active=True)
-    db.session.add(m)
-    db.session.flush()
-    db.session.add(CareActionLog(owner_id=owner.id,caregiver_id=caregiver.id,medication_id=m.id,action="medication_added",details=f"Added {m.name}; recorded prescribed dosage: {m.dosage}"))
-    db.session.commit()
-    return jsonify({"id":m.id,"name":m.name,"dosage":m.dosage,"instructions":m.instructions,"schedule_time":m.schedule_time,"active":m.active}),201
-
-
-@app.patch("/api/caregiver/medications/<int:item_id>")
-@jwt_required()
-def caregiver_update_medication(item_id):
-    d=request.get_json() or {}
-    owner, caregiver, error=caregiver_grant(d.get("owner_email"))
-    if error: return error
-    m=Medication.query.filter_by(id=item_id,user_id=owner.id).first()
-    if not m: return fail("Medication not found.",404)
-    # Caregivers can adjust reminders and instructions, but not prescribed dosage.
-    if "schedule_time" in d:
-        try: datetime.strptime(str(d["schedule_time"]),"%H:%M")
-        except ValueError: return fail("Reminder time must use HH:MM.")
-        m.schedule_time=str(d["schedule_time"])
-    if "instructions" in d: m.instructions=str(d["instructions"])[:250]
-    if "active" in d: m.active=bool(d["active"])
-    if "name" in d: m.name=str(d["name"]).strip()[:120]
-    db.session.add(CareActionLog(owner_id=owner.id,caregiver_id=caregiver.id,medication_id=m.id,action="medication_updated",details=f"Updated reminder/settings for {m.name}"))
-    db.session.commit()
-    return jsonify({"id":m.id,"name":m.name,"dosage":m.dosage,"instructions":m.instructions,"schedule_time":m.schedule_time,"active":m.active})
-
-
-@app.post("/api/caregiver/doses")
-@jwt_required()
-def caregiver_log_dose():
-    d=request.get_json() or {}
-    owner, caregiver, error=caregiver_grant(d.get("owner_email"))
-    if error: return error
-    m=Medication.query.filter_by(id=d.get("medication_id"),user_id=owner.id).first()
-    if not m: return fail("Medication not found.",404)
-    status=d.get("status")
-    if status not in ("taken","skipped","missed","pending"): return fail("Invalid dose status.")
-    scheduled_for=str(d.get("scheduled_for") or datetime.now().isoformat(timespec="minutes"))[:32]
-    dose=Dose(user_id=owner.id,medication_id=m.id,scheduled_for=scheduled_for,status=status)
-    db.session.add(dose)
-    db.session.flush()
-    db.session.add(CareActionLog(owner_id=owner.id,caregiver_id=caregiver.id,medication_id=m.id,action="dose_logged",details=f"{m.name}: marked {status} for {scheduled_for}"))
-    db.session.commit()
-    return jsonify({"id":dose.id,"medication_id":m.id,"medication":m.name,"scheduled_for":dose.scheduled_for,"status":dose.status}),201
-
-
-# Medical document uploads are stored in PostgreSQL for this MVP.
-# Keep the limit small because serverless request bodies and database storage are finite.
-MAX_MEDICAL_FILE_BYTES = 2 * 1024 * 1024
-ALLOWED_MEDICAL_MIME_TYPES = {
-    "application/pdf", "image/jpeg", "image/png", "image/webp"
+import React,{useEffect,useState} from 'react';import{createRoot}from'react-dom/client';import{Heart,LayoutDashboard,Pill,Activity,ClipboardList,Users,LogOut,Plus,CheckCircle2,Clock,ShieldCheck,Menu, X,Trash2,Leaf,ArrowUpRight,Siren}from'lucide-react';import'./style.css';
+const API=import.meta.env.VITE_API_URL || 'http://127.0.0.1:5000/api';
+function getTokenExpiry(token) {
+  try {
+    const payload = JSON.parse(
+      atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))
+    );
+    return payload.exp * 1000;
+  } catch {
+    return 0;
+  }
 }
-ALLOWED_MEDICAL_CATEGORIES = {"lab_report", "imaging", "prescription", "other"}
-ALLOWED_HISTORY_TYPES = {"condition", "illness", "surgery", "allergy", "event", "other"}
-ALLOWED_EXPENSE_CATEGORIES = {"consultation", "medicine", "diagnostic_test", "hospital", "treatment", "other"}
+
+function notifySessionExpired() {
+  window.dispatchEvent(new Event('ec-session-expired'));
+}
+function App(){const[token,setToken]=useState(localStorage.getItem('ec_token')||'');const[user,setUser]=useState(JSON.parse(localStorage.getItem('ec_user')||'null'));const[page,setPage]=useState('Dashboard');const[data,setData]=useState({medications:[],doses:[],activities:[],measurements:[],permissions:[],medicalDocuments:[],medicalHistory:[],medicalExpenses:[]});const[busy,setBusy]=useState(false);const[msg,setMsg]=useState('');const[mobile,setMobile]=useState(false);const[caregiverOwnerEmail,setCaregiverOwnerEmail]=useState('');const[caregiverSummary,setCaregiverSummary]=useState(null);const[caregiverLoading,setCaregiverLoading]=useState(false);
+const headers=()=>({'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})});
+async function api(path,method='GET',body){
+  const r=await fetch(API+path,{
+    method,
+    headers:headers(),
+    ...(body?{body:JSON.stringify(body)}:{})
+  });
+  const d=await r.json();
+  if(r.status===401 && token){
+    notifySessionExpired();
+    throw Error("Your session has expired. Please log in again.");
+  }
+  if(!r.ok) throw Error(d.error || 'Request failed');
+  return d;
+}
+async function refresh(){
+  if(!token) return;
+  try {
+    const keys=['medications','doses','activities','measurements','permissions'];
+    const [vals,medicalDocuments,medicalHistory,medicalExpenses]=await Promise.all([
+      Promise.all(keys.map(k=>api('/'+k))),
+      api('/medical-documents'),api('/medical-history'),api('/medical-expenses')
+    ]);
+    setData({...Object.fromEntries(keys.map((k,i)=>[k,vals[i]])),medicalDocuments,medicalHistory,medicalExpenses});
+  } catch(e) {
+    setMsg(e.message);
+  }
+}
+useEffect(()=>{refresh()},[token]);
+
+useEffect(() => {
+  const handleExpired = () => {
+    localStorage.removeItem('ec_token');
+    localStorage.removeItem('ec_user');
+    setToken('');
+    setUser(null);
+    setData({
+      medications: [],
+      doses: [],
+      activities: [],
+      measurements: [],
+      permissions: [],
+      medicalDocuments: [],
+      medicalHistory: [],
+      medicalExpenses: []
+    });
+    setMsg("Your session has expired. Please log in again.");
+  };
+
+  window.addEventListener('ec-session-expired', handleExpired);
+  return () => window.removeEventListener('ec-session-expired', handleExpired);
+}, []);
+               useEffect(() => {
+  if (!token) return;
+
+  const expiry = getTokenExpiry(token);
+  const remaining = expiry - Date.now();
+
+  if (remaining <= 0) {
+    logout();
+    setMsg("Your session has expired. Please log in again.");
+    return;
+  }
+
+  const timer = setTimeout(() => {
+    logout();
+    setMsg("Your session has expired. Please log in again.");
+  }, remaining);
+
+  return () => clearTimeout(timer);
+}, [token]);
+               useEffect(() => {
+  if (!token) return;
+
+  const checkReminders = () => {
+    if (!("Notification" in window) || Notification.permission !== "granted") return;
+
+    const now = new Date();
+    const today = now.toLocaleDateString("en-CA");
+    const currentTime = now.toTimeString().slice(0, 5);
+
+    data.medications.forEach((med) => {
+      if (med.schedule_time === currentTime) {
+        const key = `reminder-${med.id}-${today}-${currentTime}`;
+
+        if (!localStorage.getItem(key)) {
+          new Notification("ElderCare medication reminder", {
+            body: `Time to take ${med.name} (${med.dosage}). ${med.instructions || ""}`,
+          });
+          localStorage.setItem(key, "sent");
+        }
+      }
+    });
+  };
+
+  checkReminders();
+  const timer = setInterval(checkReminders, 30000);
+  return () => clearInterval(timer);
+}, [token, data.medications]);
+async function submitAuth(e){e.preventDefault();setBusy(true);setMsg('');const f=new FormData(e.currentTarget);try{const d=await api('/auth/'+(f.get('mode')==='register'?'register':'login'),'POST',{name:f.get('name'),email:f.get('email'),password:f.get('password')});localStorage.setItem('ec_token',d.token);localStorage.setItem('ec_user',JSON.stringify(d.user));setToken(d.token);setUser(d.user)}catch(x){setMsg(x.message)}finally{setBusy(false)}}
+function logout(){
+  localStorage.removeItem('ec_token');
+  localStorage.removeItem('ec_user');
+  setToken('');
+  setUser(null);
+  setData({
+    medications: [],
+    doses: [],
+    activities: [],
+    measurements: [],
+    permissions: []
+  });
+  setCaregiverSummary(null);
+  setCaregiverOwnerEmail('');
+}
+async function act(fn){try{setMsg('');await fn();await refresh();setMsg('Saved successfully.')}catch(e){setMsg(e.message)}}
+async function loadCaregiverSummary(e){
+  if(e) e.preventDefault();
+  const email=caregiverOwnerEmail.trim().toLowerCase();
+  if(!email || !email.includes('@')){
+    setMsg('Please enter the elderly person’s registered email address.');
+    return;
+  }
+  setCaregiverLoading(true);
+  setMsg('');
+  setCaregiverSummary(null);
+  try{
+    const result=await api('/caregiver/summary?owner_email='+encodeURIComponent(email));
+    setCaregiverSummary(result);
+    setMsg('Caregiver information loaded successfully.');
+  }catch(error){
+    setMsg(error.message || 'Unable to load caregiver information.');
+  }finally{
+    setCaregiverLoading(false);
+  }
+}
+async function caregiverCreateMedication(payload){
+  await api('/caregiver/medications','POST',{...payload,owner_email:caregiverOwnerEmail});
+  await loadCaregiverSummary();
+  setMsg('Medication reminder added.');
+}
+async function caregiverUpdateMedication(id,payload){
+  await api('/caregiver/medications/'+id,'PATCH',{...payload,owner_email:caregiverOwnerEmail});
+  await loadCaregiverSummary();
+  setMsg('Care schedule updated.');
+}
+async function caregiverLogDose(payload){
+  await api('/caregiver/doses','POST',{...payload,owner_email:caregiverOwnerEmail});
+  await loadCaregiverSummary();
+  setMsg('Dose activity recorded.');
+}
+async function triggerEmergencySOS(){
+  const confirmed=window.confirm('Send an Emergency SOS email to every active caregiver linked to your account? This does not call emergency services.');
+  if(!confirmed) return;
+  setBusy(true);setMsg('Sending SOS alert…');
+  try{
+    const result=await api('/emergency/sos','POST',{});
+    setMsg(`${result.message} Emails sent: ${result.emails_sent}. ${result.failed ? `Failed: ${result.failed}.` : ''}`);
+  }catch(error){setMsg(error.message||'Could not send the SOS alert.');}
+  finally{setBusy(false);}
+}
+const nav=[['Dashboard',LayoutDashboard],['Medications',Pill],['Activity',Activity],['Health records',ClipboardList],['Caregiver sharing',Users],['Caregiver dashboard',Users],['Emergency SOS',Siren]];
+if(!token)return <Auth onSubmit={submitAuth} busy={busy} msg={msg}/>;
+return <div className="app"><style>{`
+:root{
+ --ec-bg:#dce8df;--ec-panel:#f4f7f1;--ec-panel-soft:#e9f0e8;
+ --ec-green:#315f49;--ec-green-deep:#214735;--ec-green-mid:#56836a;
+ --ec-sage:#a9c1a9;--ec-olive:#a4a66b;--ec-gold:#d2b878;
+ --ec-ink:#263d31;--ec-muted:#718277;--ec-border:#d1dfd2;
+}
+html,body,#root{min-height:100%;background:#dce8df!important}
+body{color:var(--ec-ink)!important}
+.app{min-height:100vh;background:linear-gradient(135deg,#dce8df 0%,#e8eddf 48%,#d2e2d7 100%)!important;color:var(--ec-ink)!important}
+.side{background:linear-gradient(180deg,#e9f0e8 0%,#dce9df 100%)!important;border-right:1px solid #cbdaca!important}
+.main{background:transparent!important}
+.main header{background:rgba(239,245,237,.92)!important;border-bottom:1px solid #cbdaca!important;backdrop-filter:blur(12px)}
+.brand,.brand small,.navlabel,.eyebrow{color:#426c50!important}
+.brandicon{background:linear-gradient(145deg,#c8d9c6,#a9c4ae)!important;color:#315f49!important}
+.nav{color:#526c5b!important;border-radius:13px!important}
+.nav:hover,.nav.active{background:linear-gradient(100deg,#c4d8c4,#d9dfbd)!important;color:#244b36!important}
+.nav.active{box-shadow:inset 3px 0 0 #648b5e!important}
+.panel,.formpanel,.stat,.listrow,.empty,.profile,.sectionhead,.main .panel{background:#f4f7f1!important;border:1px solid #d1dfd2!important;box-shadow:0 9px 25px rgba(39,77,52,.08)!important}
+.panelhead h3,.panel h3,.sectionhead h2{color:#31533d!important}
+.panelhead p,.muted,.panel p{color:#718277!important}
+.field input,.field select,.field textarea,input,select,textarea{background:#f8faf5!important;border:1px solid #cbdaca!important;color:#294434!important;border-radius:12px}
+.field input:focus,.field select:focus,.field textarea:focus,input:focus,select:focus,textarea:focus{outline:2px solid #91b39a!important;border-color:#648b70!important}
+.primary{background:linear-gradient(120deg,#315f49,#56836a)!important;color:#fff!important;border:0!important;box-shadow:0 7px 18px rgba(38,83,55,.2)!important}
+.primary:hover{filter:brightness(1.07)}
+.softbtn,.iconbtn{background:#dce9dd!important;color:#315f49!important;border:1px solid #c2d6c5!important}
+.textbtn{color:#477856!important}
+.medrow,.listrow,.miniwell{background:#eaf1e8!important;border-color:#d1dfd2!important}
+.medicon,.roundicon,.staticon{background:#d7e6d7!important;color:#477454!important}
+.time,.status.taken{background:#dce9d9!important;color:#416b4a!important}
+.error{background:#f8e5df!important;color:#8c5145!important;border:1px solid #e9c9bc!important}
+.toast{background:#f4f7f1!important;color:#31533d!important;border:1px solid #d1dfd2!important}
+.main .panel button:not(.primary){color:#477856}
+.auth-warm-card{background:#f4f7f1!important}
+@media(max-width:760px){.side{box-shadow:12px 0 35px rgba(38,70,47,.16)!important}}
+
+/* Visual alignment and readable rhythm */
+.app{width:100%;}
+.main{min-width:0;}
+.main>header{gap:22px;min-height:104px;padding:22px clamp(20px,3vw,42px)!important;}
+.main>header h1{font-size:clamp(22px,2.2vw,30px)!important;line-height:1.2!important;letter-spacing:-.55px;margin:5px 0 0!important;}
+.main>header .eyebrow{font-size:10px;letter-spacing:1.45px;font-weight:800;}
+.main>header .profile{flex-shrink:0;}
+.main> :not(header):not(footer){max-width:1180px;margin-left:auto;margin-right:auto;}
+.main>.toast{max-width:1180px;margin:16px auto!important;}
+.notification-bar{width:calc(100% - 2px);box-sizing:border-box;display:flex;align-items:center;justify-content:space-between;gap:18px;padding:14px 18px;margin:20px auto 24px!important;border:1px solid #cfddcf;border-radius:16px;background:rgba(244,247,241,.92);box-shadow:0 5px 16px rgba(39,77,52,.055);}
+.notification-copy{display:flex;align-items:center;gap:12px;min-width:0;}
+.notification-icon{width:38px;height:38px;flex:0 0 38px;display:grid;place-items:center;border-radius:12px;background:#dce9dd;color:#315f49;}
+.notification-copy strong{display:block;color:#31533d;font-size:13px;line-height:1.35;margin-bottom:3px;}
+.notification-copy span:not(.notification-icon){display:block;color:#718277;font-size:12px;line-height:1.45;}
+.notification-button{flex:0 0 auto;min-height:40px;padding:0 17px!important;border-radius:11px!important;font-size:12px!important;font-weight:750!important;white-space:nowrap;}
+.sectionhead{display:flex;align-items:center;justify-content:space-between;gap:22px;padding:22px 24px!important;border-radius:18px!important;margin:22px 0 16px!important;}
+.sectionhead>div{min-width:0;}
+.sectionhead h2{font-size:clamp(21px,2vw,27px)!important;line-height:1.22!important;letter-spacing:-.45px;margin:5px 0 6px!important;}
+.sectionhead p{font-size:13px;line-height:1.55;margin:0!important;max-width:650px;}
+.panel,.formpanel{box-sizing:border-box;border-radius:18px!important;padding:22px!important;margin-top:16px!important;}
+.panel h3,.formpanel h3{font-size:17px;line-height:1.35;letter-spacing:-.2px;margin:0 0 12px;color:#31533d;}
+.panel p,.formpanel p{line-height:1.6;}
+.formgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 18px;margin:16px 0;}
+.field{display:flex;flex-direction:column;gap:7px;min-width:0;}
+.field label{font-size:12px;font-weight:750;line-height:1.4;color:#496653;}
+.field input,.field select,.field textarea{width:100%;min-height:44px;box-sizing:border-box;padding:10px 12px;font-size:13px;line-height:1.4;}
+.formpanel>.primary,.formpanel>button.primary{min-height:42px;padding:0 18px;border-radius:11px;font-size:13px;font-weight:750;}
+.primary,.softbtn,.iconbtn,.textbtn{font-family:inherit;line-height:1.25;}
+.primary,.softbtn{min-height:38px;padding:9px 14px;border-radius:10px;font-size:12px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;gap:7px;}
+.listrow{display:flex;align-items:center;gap:14px;padding:13px 15px!important;margin:9px 0;border-radius:13px!important;min-width:0;}
+.listrow>div:first-child{min-width:0;}
+.listrow b,.listrow strong{font-size:13px;line-height:1.4;color:#31533d;}
+.listrow small{font-size:11px;line-height:1.45;color:#718277;}
+.status,.time{display:inline-flex;align-items:center;justify-content:center;min-height:28px;padding:5px 10px;border-radius:9px;font-size:11px;font-weight:750;white-space:nowrap;}
+.checks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 14px;margin:14px 0 18px;}
+.checks label{display:flex;align-items:flex-start;gap:9px;padding:11px 12px;border:1px solid #d5e1d5;border-radius:11px;background:#edf3eb;color:#476453;font-size:12px;line-height:1.45;}
+.checks input{width:16px;height:16px;flex:0 0 16px;margin:1px 0 0;accent-color:#477856;}
+.notice{display:flex;align-items:flex-start;gap:10px;padding:13px 15px!important;border-radius:13px;line-height:1.55!important;font-size:12px!important;background:#edf4ed;border:1px solid #d6e3d6;color:#5f7766;}
+.notice svg{flex:0 0 auto;margin-top:1px;}
+.toast{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border-radius:12px;font-size:12px;line-height:1.45;}
+footer{max-width:1180px;margin:28px auto 0!important;padding:18px 22px!important;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;color:#718277;font-size:11px;}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #9bbda1!important;outline-offset:2px;}
+@media(max-width:760px){
+ .main>header{min-height:84px;padding:16px 18px!important;gap:12px;}
+ .main>header .profile{display:none;}
+ .notification-bar{align-items:stretch;flex-direction:column;padding:14px;margin:14px auto 18px!important;}
+ .notification-button{width:100%;}
+ .sectionhead{align-items:flex-start;flex-direction:column;padding:18px!important;}
+ .sectionhead>.primary,.sectionhead>button{width:100%;}
+ .formgrid,.checks{grid-template-columns:minmax(0,1fr);}
+ .panel,.formpanel{padding:17px!important;}
+ .listrow{align-items:flex-start;flex-wrap:wrap;gap:9px;}
+ footer{padding:16px 18px!important;}
+}
+`}</style><aside className={mobile?'side open':'side'}><div className="brand"><span className="brandicon"><Heart/></span><span>ElderCare<small>WELLNESS COMPANION</small></span><button className="mobileclose" onClick={()=>setMobile(false)}><X/></button></div><div className="navlabel">YOUR SPACE</div>{nav.map(([n,I])=><button key={n} className={'nav '+(page===n?'active':'')} onClick={()=>{setPage(n);setMobile(false)}}><I size={19}/>{n}</button>)}<div className="sidebottom"><div className="privacy"><ShieldCheck/><div><b>Your data, your choice</b><small>Caregiver sharing is optional and controlled by you.</small></div></div><button className="nav" onClick={logout}><LogOut size={18}/>Sign out</button></div></aside><main className="main"><header><button className="hamb" onClick={()=>setMobile(true)}><Menu/></button><div><div className="eyebrow">YOUR PERSONAL WELLNESS SPACE</div><h1>{page==='Dashboard'?'Good day':page}, {user?.name?.split(' ')[0]||'there'} <span className="wave">☀</span></h1></div></header>{msg&&<div className="toast" onClick={()=>setMsg('')}>{msg} <X size={14}/></div>}
+  <div className="notification-bar">
+    <div className="notification-copy">
+      <span className="notification-icon"><Clock size={18}/></span>
+      <div>
+        <strong>Medication alerts</strong>
+        <span>Get a gentle browser notification when it is time for a scheduled dose.</span>
+      </div>
+    </div>
+    <button className="primary notification-button" onClick={async () => {
+      if ("Notification" in window) {
+        const permission = await Notification.requestPermission();
+        setMsg(permission === "granted"
+          ? "Browser reminders enabled!"
+          : "Please allow notifications in your browser settings.");
+      } else {
+        setMsg("Your browser does not support notifications.");
+      }
+    }}>
+      Enable notifications
+    </button>
+  </div>
+{page==='Dashboard'&&<Dashboard data={data} setPage={setPage} user={user}/>}
+{page==='Medications'&&<Medications data={data} act={act}/>}
+{page==='Activity'&&<Activities data={data} act={act}/>}
+{page==='Health records'&&<Health data={data} act={act}/>}
+{page==='Caregiver sharing'&&<Sharing data={data} act={act}/>}
+{page==='Caregiver dashboard'&&<CaregiverDashboard ownerEmail={caregiverOwnerEmail} setOwnerEmail={setCaregiverOwnerEmail} summary={caregiverSummary} loading={caregiverLoading} onLookup={loadCaregiverSummary} onClear={()=>setCaregiverSummary(null)} onCreateMedication={caregiverCreateMedication} onUpdateMedication={caregiverUpdateMedication} onLogDose={caregiverLogDose}/>}
+{page==='Emergency SOS'&&<EmergencySOS onSend={triggerEmergencySOS} busy={busy} permissions={data.permissions}/> }
+<footer><span>Made with care for everyday independence.</span><span>Demo MVP · Not a medical device</span></footer></main></div>}
+
+function EmergencySOS({onSend,busy,permissions}){
+  const active=(permissions||[]).filter(p=>p.active);
+  return <div style={{display:'grid',gap:18,maxWidth:850,margin:'0 auto'}}>
+    <SectionHead eyebrow="QUICK HELP ALERT" title="Emergency SOS" desc="Send an urgent email to the caregivers linked to your ElderCare account."/>
+    <section className="panel" style={{padding:'clamp(22px,4vw,34px)',borderRadius:22,border:'1px solid #e4c7bd',background:'linear-gradient(145deg,#fff8f4,#f8eee8)'}}>
+      <div style={{display:'flex',alignItems:'center',gap:13,marginBottom:14}}>
+        <span style={{width:48,height:48,display:'grid',placeItems:'center',borderRadius:15,background:'#f4ddd4',color:'#a34f3d'}}><Siren size={25}/></span>
+        <div><h3 style={{margin:'0 0 4px',color:'#793f34'}}>Need help? Alert your caregivers.</h3><p style={{margin:0,color:'#8b6a60',fontSize:13}}>This sends an email asking them to contact you immediately.</p></div>
+      </div>
+      <div style={{padding:15,borderRadius:13,background:'#fff',border:'1px solid #f0ddd5',margin:'18px 0'}}>
+        <b style={{display:'block',color:'#684a42',fontSize:13,marginBottom:6}}>Active caregiver contacts: {active.length}</b>
+        {active.length ? <p style={{margin:0,color:'#826e66',fontSize:13,lineHeight:1.6}}>Your SOS email will be sent to the caregiver email addresses you've authorised in Caregiver sharing.</p> : <p style={{margin:0,color:'#9a5548',fontSize:13,lineHeight:1.6}}>No active caregiver permissions found. Add a caregiver in Caregiver sharing before using this feature.</p>}
+      </div>
+      <button type="button" onClick={onSend} disabled={busy||!active.length} style={{width:'100%',minHeight:54,border:0,borderRadius:14,background:active.length?'linear-gradient(120deg,#a84c3e,#c96b54)':'#c9b9b3',color:'#fff',fontSize:15,fontWeight:800,cursor:active.length?'pointer':'not-allowed',boxShadow:'0 8px 20px rgba(153,72,56,.18)'}}>{busy?'Sending alert…':'Send Emergency SOS Alert'}</button>
+    </section>
+    <div className="notice" style={{borderColor:'#e8c9bd',background:'#fff7f2',color:'#81584d',lineHeight:1.7}}><ShieldCheck size={18}/> <span><b>Important safety information:</b> SOS sends an email to your linked caregivers only. It does not call an ambulance, police, or any emergency service. If you are in immediate danger or need urgent medical help, contact your local emergency number directly.</span></div>
+  </div>;
+}
+
+function Auth({onSubmit,busy,msg}){
+  const[mode,setMode]=useState('register');
+  const isRegister=mode==='register';
+  const pageStyle={minHeight:'100vh',background:'linear-gradient(135deg,#dce8df 0%,#e8eddf 52%,#d2e2d7 100%)',padding:'clamp(18px,4vw,54px)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:'inherit'};
+  const shellStyle={width:'min(1180px,100%)',display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(min(100%,390px),1fr))',background:'#f4f7f1',borderRadius:30,overflow:'hidden',boxShadow:'0 28px 90px rgba(38,75,57,.13)',border:'1px solid #e4eee6'};
+  return <div style={pageStyle}><style>{`
+:root{
+ --ec-bg:#dce8df;--ec-panel:#f4f7f1;--ec-panel-soft:#e9f0e8;
+ --ec-green:#315f49;--ec-green-deep:#214735;--ec-green-mid:#56836a;
+ --ec-sage:#a9c1a9;--ec-olive:#a4a66b;--ec-gold:#d2b878;
+ --ec-ink:#263d31;--ec-muted:#718277;--ec-border:#d1dfd2;
+}
+html,body,#root{min-height:100%;background:#dce8df!important}
+body{color:var(--ec-ink)!important}
+.app{min-height:100vh;background:linear-gradient(135deg,#dce8df 0%,#e8eddf 48%,#d2e2d7 100%)!important;color:var(--ec-ink)!important}
+.side{background:linear-gradient(180deg,#e9f0e8 0%,#dce9df 100%)!important;border-right:1px solid #cbdaca!important}
+.main{background:transparent!important}
+.main header{background:rgba(239,245,237,.92)!important;border-bottom:1px solid #cbdaca!important;backdrop-filter:blur(12px)}
+.brand,.brand small,.navlabel,.eyebrow{color:#426c50!important}
+.brandicon{background:linear-gradient(145deg,#c8d9c6,#a9c4ae)!important;color:#315f49!important}
+.nav{color:#526c5b!important;border-radius:13px!important}
+.nav:hover,.nav.active{background:linear-gradient(100deg,#c4d8c4,#d9dfbd)!important;color:#244b36!important}
+.nav.active{box-shadow:inset 3px 0 0 #648b5e!important}
+.panel,.formpanel,.stat,.listrow,.empty,.profile,.sectionhead,.main .panel{background:#f4f7f1!important;border:1px solid #d1dfd2!important;box-shadow:0 9px 25px rgba(39,77,52,.08)!important}
+.panelhead h3,.panel h3,.sectionhead h2{color:#31533d!important}
+.panelhead p,.muted,.panel p{color:#718277!important}
+.field input,.field select,.field textarea,input,select,textarea{background:#f8faf5!important;border:1px solid #cbdaca!important;color:#294434!important;border-radius:12px}
+.field input:focus,.field select:focus,.field textarea:focus,input:focus,select:focus,textarea:focus{outline:2px solid #91b39a!important;border-color:#648b70!important}
+.primary{background:linear-gradient(120deg,#315f49,#56836a)!important;color:#fff!important;border:0!important;box-shadow:0 7px 18px rgba(38,83,55,.2)!important}
+.primary:hover{filter:brightness(1.07)}
+.softbtn,.iconbtn{background:#dce9dd!important;color:#315f49!important;border:1px solid #c2d6c5!important}
+.textbtn{color:#477856!important}
+.medrow,.listrow,.miniwell{background:#eaf1e8!important;border-color:#d1dfd2!important}
+.medicon,.roundicon,.staticon{background:#d7e6d7!important;color:#477454!important}
+.time,.status.taken{background:#dce9d9!important;color:#416b4a!important}
+.error{background:#f8e5df!important;color:#8c5145!important;border:1px solid #e9c9bc!important}
+.toast{background:#f4f7f1!important;color:#31533d!important;border:1px solid #d1dfd2!important}
+.main .panel button:not(.primary){color:#477856}
+.auth-warm-card{background:#f4f7f1!important}
+@media(max-width:760px){.side{box-shadow:12px 0 35px rgba(38,70,47,.16)!important}}
+`}</style>
+    <div style={shellStyle}>
+      <section style={{padding:'clamp(28px,5vw,62px)',backgroundImage:'linear-gradient(90deg,rgba(220,235,222,.84) 0%,rgba(226,236,219,.70) 54%,rgba(218,233,221,.38) 100%),url(/eldercare-care-hands.png)',backgroundSize:'cover',backgroundPosition:'center',backgroundRepeat:'no-repeat',display:'flex',flexDirection:'column',justifyContent:'space-between',gap:34,minHeight:600}}>
+        <div>
+          <div style={{display:'flex',alignItems:'center',gap:12,color:'#214c3c',fontSize:25,fontWeight:800,letterSpacing:'-.7px'}}>
+            <span style={{width:48,height:48,borderRadius:16,display:'grid',placeItems:'center',background:'#fff',boxShadow:'0 6px 20px #234b3514'}}><Heart size={25}/></span>
+            <span>ElderCare<small style={{display:'block',fontSize:9,letterSpacing:2.4,fontWeight:700,color:'#789184',marginTop:3}}>WELLNESS COMPANION</small></span>
+          </div>
+          <div style={{marginTop:65,maxWidth:500}}>
+            <div style={{display:'inline-flex',alignItems:'center',gap:8,padding:'8px 13px',borderRadius:99,background:'#ffffffb8',color:'#47745c',fontSize:11,fontWeight:800,letterSpacing:1.2}}><Leaf size={15}/> CARE THAT FEELS CLOSER</div>
+            <h1 style={{fontSize:'clamp(38px,5vw,58px)',lineHeight:1.06,letterSpacing:'-2px',color:'#173c30',margin:'22px 0 16px'}}>A little more care.<br/><span style={{color:'#6b9b78'}}>A lot more peace.</span></h1>
+            <p style={{fontSize:17,lineHeight:1.75,color:'#61796b',maxWidth:440,margin:0}}>Everyday wellbeing, thoughtful reminders and family connection — together in one calm, simple space.</p>
+          </div>
+        </div>
+        <div style={{display:'grid',gap:12}}>
+          {[
+            ['01','Gentle daily routines','Keep medicines, movement and health notes organised.'],
+            ['02','Care that stays connected','Share selected updates with people you trust.'],
+            ['03','Your choices come first','You decide what to record and what to share.']
+          ].map(([n,t,d])=><div key={n} style={{display:'flex',gap:15,alignItems:'flex-start',padding:'15px 17px',borderRadius:17,background:'#ffffffb8',border:'1px solid #ffffff'}}>
+            <b style={{fontSize:12,color:'#82a48b',paddingTop:3}}>{n}</b><div><b style={{display:'block',color:'#294d3c',fontSize:14}}>{t}</b><span style={{display:'block',color:'#718477',fontSize:12,lineHeight:1.5,marginTop:4}}>{d}</span></div>
+          </div>)}
+        </div>
+        <div style={{color:'#819488',fontSize:11}}>A supportive companion for everyday care · Not a medical device</div>
+      </section>
+      <section style={{padding:'clamp(28px,5vw,62px)',display:'flex',flexDirection:'column',justifyContent:'center'}}>
+        <div style={{maxWidth:430,width:'100%',margin:'0 auto'}}>
+          <div style={{fontSize:11,fontWeight:800,letterSpacing:2,color:'#7b9b85'}}>WELCOME TO ELDERCARE</div>
+          <h2 style={{fontSize:34,letterSpacing:'-1px',color:'#1d3e31',margin:'13px 0 8px'}}>{isRegister?'Let’s make care simpler.':'It’s good to see you again.'}</h2>
+          <p style={{color:'#829188',lineHeight:1.65,margin:'0 0 28px'}}>{isRegister?'Create your personal space and take the first step toward a more organised routine.':'Sign in to pick up right where you left off.'}</p>
+          <form onSubmit={onSubmit} style={{display:'grid',gap:12}}>
+            <input type="hidden" name="mode" value={mode}/>
+            {isRegister&&<><label style={{fontSize:13,fontWeight:700,color:'#476453'}}>Your name</label><input name="name" placeholder="e.g. Asha Sharma" required style={authInputStyle}/></>}
+            <label style={{fontSize:13,fontWeight:700,color:'#476453'}}>Email address</label>
+            <input name="email" type="email" placeholder="you@example.com" required style={authInputStyle}/>
+            <label style={{fontSize:13,fontWeight:700,color:'#476453'}}>Password</label>
+            <input name="password" type="password" minLength="8" placeholder="At least 8 characters" required style={authInputStyle}/>
+            {msg&&<div className="error">{msg}</div>}
+            <button className="primary full" disabled={busy} style={{marginTop:10,minHeight:52,borderRadius:14,fontSize:15,fontWeight:800}}>{busy?'Please wait…':isRegister?'Create my account':'Sign in to ElderCare'}</button>
+          </form>
+          <div style={{textAlign:'center',color:'#819087',fontSize:13,marginTop:22}}>{isRegister?'Already have an account?':'New to ElderCare?'} <button type="button" onClick={()=>setMode(isRegister?'login':'register')} style={{border:0,background:'none',color:'#397858',fontWeight:800,cursor:'pointer',fontSize:13}}>{isRegister?'Sign in':'Create an account'}</button></div>
+          <div style={{marginTop:30,padding:'13px 15px',borderRadius:13,background:'#f3f8f4',color:'#718779',fontSize:11,lineHeight:1.6,display:'flex',gap:9,alignItems:'center'}}><ShieldCheck size={18} color="#5e9270"/> Your caregiver sharing is optional and stays under your control.</div>
+        </div>
+      </section>
+    </div>
+  </div>;
+}
+const authInputStyle={width:'100%',boxSizing:'border-box',padding:'15px 16px',borderRadius:13,border:'1px solid #dce8df',background:'#fbfdfb',fontSize:14,color:'#294638',outlineColor:'#78a987'};
+
+function SectionHead({eyebrow,title,desc,action}){return <div className="sectionhead"><div><div className="eyebrow">{eyebrow}</div><h2>{title}</h2><p>{desc}</p></div>{action}</div>}
+function Dashboard({data,setPage,user}){
+  const taken=data.doses.filter(x=>x.status==='taken').length;
+  const cards=[
+    {icon:Pill,label:'Your medicines',value:data.medications.length,detail:'Active schedules',page:'Medications'},
+    {icon:CheckCircle2,label:'Doses recorded',value:taken,detail:'Marked as taken',page:'Medications'},
+    {icon:Activity,label:'Activity entries',value:data.activities.length,detail:'Wellness moments',page:'Activity'},
+    {icon:ClipboardList,label:'Health records',value:data.measurements.length,detail:'Measurements saved',page:'Health records'}
+  ];
+  return <div style={{display:'grid',gap:22}}>
+    <section style={{position:'relative',overflow:'hidden',borderRadius:26,padding:'clamp(25px,4vw,42px)',backgroundImage:'linear-gradient(100deg,rgba(29,70,51,.88) 0%,rgba(44,91,64,.74) 58%,rgba(47,91,65,.42) 100%),url(/eldercare-family-walk.png)',backgroundSize:'cover',backgroundPosition:'center 42%',color:'#fff',boxShadow:'0 16px 38px #244f3a20'}}>
+      <div style={{position:'absolute',right:-35,top:-80,width:300,height:300,borderRadius:'50%',border:'1px solid #ffffff25'}}></div>
+      <div style={{position:'absolute',right:45,bottom:-100,width:220,height:220,borderRadius:'50%',background:'#ffffff0c'}}></div>
+      <div style={{position:'relative',zIndex:1,maxWidth:650}}>
+        <span style={{display:'inline-flex',alignItems:'center',gap:8,padding:'8px 13px',borderRadius:99,background:'#ffffff20',fontSize:10,fontWeight:800,letterSpacing:1.4}}><Leaf size={14}/> YOUR WELLNESS, YOUR PACE</span>
+        <h2 style={{fontSize:'clamp(30px,4vw,45px)',lineHeight:1.1,letterSpacing:'-1.4px',margin:'22px 0 12px'}}>Every day is a fresh<br/>chance to feel cared for.</h2>
+        <p style={{fontSize:15,lineHeight:1.75,color:'#e2eee5',maxWidth:520,margin:'0 0 23px'}}>Hello {user?.name?.split(' ')[0]||'there'} — keep your daily routines close, celebrate small steps and stay connected with the people who care.</p>
+        <div style={{display:'flex',flexWrap:'wrap',gap:10}}>
+          <button onClick={()=>setPage('Medications')} style={{border:0,borderRadius:12,padding:'12px 17px',background:'#fff',color:'#28543e',fontWeight:800,cursor:'pointer'}}>View medication routine</button>
+          <button onClick={()=>setPage('Caregiver sharing')} style={{border:'1px solid #ffffff70',borderRadius:12,padding:'12px 17px',background:'#ffffff12',color:'#fff',fontWeight:700,cursor:'pointer'}}>Manage caregiver sharing</button>
+        </div>
+      </div>
+      <div style={{position:'absolute',right:'7%',top:'26%',fontSize:90,opacity:.18}} aria-hidden="true">🌿</div>
+    </section>
+    <section style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',gap:14}}>
+      {cards.map(({icon:I,label,value,detail,page:p})=><button key={label} onClick={()=>setPage(p)} style={{textAlign:'left',display:'flex',alignItems:'center',gap:14,padding:'19px 17px',borderRadius:18,border:'1px solid #e4ece5',background:'#fff',boxShadow:'0 5px 18px #234b3508',cursor:'pointer'}}>
+        <span style={{width:45,height:45,flexShrink:0,display:'grid',placeItems:'center',borderRadius:15,background:'#edf5ef',color:'#4f8060'}}><I size={21}/></span>
+        <span><small style={{display:'block',fontSize:12,color:'#829188'}}>{label}</small><b style={{display:'block',fontSize:27,color:'#244b38',lineHeight:1.2,margin:'3px 0'}}>{value}</b><small style={{fontSize:11,color:'#9aa79e'}}>{detail}</small></span>
+      </button>)}
+    </section>
+    <section style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(min(100%,300px),1fr))',gap:18}}>
+      <div className="panel" style={{borderRadius:20,padding:23}}>
+        <div className="panelhead"><div><h3>Your daily care routine</h3><p>Simple steps, organised in one place</p></div></div>
+        {data.medications.length?data.medications.slice(0,4).map(m=><div className="medrow" key={m.id}><div className="medicon"><Pill/></div><div className="medinfo"><b>{m.name}</b><small>{m.dosage} · {m.instructions||'As prescribed'}</small></div><span className="time"><Clock size={14}/>{m.schedule_time}</span></div>):<Empty icon={Pill} title="Start with your medication routine" text="Add prescribed medicines and their schedule to keep your routine organised." button="Add medication" onClick={()=>setPage('Medications')}/>}
+        <button className="textbtn" onClick={()=>setPage('Medications')} style={{marginTop:12}}>Open medication tracker <ArrowUpRight size={15}/></button>
+      </div>
+      <div className="panel" style={{borderRadius:20,padding:23}}>
+        <div className="panelhead"><div><h3>Little moments matter</h3><p>Your wellbeing at a glance</p></div></div>
+        <div className="miniwell"><span className="roundicon mint"><Activity/></span><div><b>{data.activities.reduce((s,a)=>s+a.minutes,0)} min</b><small>Activity minutes recorded</small></div></div>
+        <div className="miniwell"><span className="roundicon peach"><ClipboardList/></span><div><b>{data.measurements.length} entries</b><small>Health measurements saved</small></div></div>
+        <div style={{marginTop:20,padding:18,borderRadius:16,background:'#f0f6f0',border:'1px solid #e4eee5'}}>
+          <b style={{display:'block',color:'#345d43',marginBottom:7}}>A gentle thought for today</b>
+          <p style={{fontSize:13,lineHeight:1.7,color:'#718579',margin:0}}>You don't have to do everything at once. One small step, one kind check-in, one moment at a time — that is care, too.</p>
+        </div>
+        <button className="textbtn" onClick={()=>setPage('Activity')} style={{marginTop:12}}>Record an activity <ArrowUpRight size={15}/></button>
+      </div>
+    </section>
+
+    <section style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(min(100%,260px),1fr))',gap:16,alignItems:'stretch'}}>
+      <div style={{borderRadius:20,overflow:'hidden',background:'#fff',border:'1px solid #e4ece5',boxShadow:'0 7px 22px #234b3508'}}>
+        <img src="/eldercare-family-walk.png" alt="An older adult enjoying a peaceful walk with a loved one" style={{width:'100%',height:180,objectFit:'cover',display:'block'}}/>
+        <div style={{padding:'17px 19px 20px'}}>
+          <b style={{display:'block',color:'#315640',fontSize:16}}>Make room for little moments.</b>
+          <p style={{margin:'7px 0 0',fontSize:13,lineHeight:1.65,color:'#7b8b80'}}>A short walk, a friendly check-in, a little fresh air — everyday wellbeing is built one moment at a time.</p>
+        </div>
+      </div>
+      <div style={{borderRadius:20,overflow:'hidden',background:'#fff',border:'1px solid #e4ece5',boxShadow:'0 7px 22px #234b3508'}}>
+        <img src="/eldercare-wellness-illustration.png" alt="Illustration representing support and wellbeing for older adults" style={{width:'100%',height:180,objectFit:'cover',display:'block',background:'#eaf1ff'}}/>
+        <div style={{padding:'17px 19px 20px'}}>
+          <b style={{display:'block',color:'#315640',fontSize:16}}>Care works better together.</b>
+          <p style={{margin:'7px 0 0',fontSize:13,lineHeight:1.65,color:'#7b8b80'}}>Keep trusted family and caregivers connected through the updates you choose to share.</p>
+        </div>
+      </div>
+    </section>
+
+    <div style={{padding:'16px 19px',borderRadius:16,background:'#edf5ef',color:'#64806d',fontSize:12,lineHeight:1.7,display:'flex',gap:10,alignItems:'center'}}><ShieldCheck size={19}/> Your information is yours. Share selected updates with trusted caregivers whenever you choose. ElderCare supports everyday organisation and does not replace professional medical care.</div>
+  </div>;
+}
+
+function Stat({icon:I,label,value,sub}){return <div className="stat"><span className="staticon"><I/></span><div><small>{label}</small><strong>{value}</strong><span>{sub}</span></div></div>}
+function Empty({icon:I,title,text,button,onClick}){return <div className="empty"><span><I/></span><b>{title}</b><p>{text}</p>{button&&<button className="primary" onClick={onClick}><Plus size={16}/>{button}</button>}</div>}
+function Medications({data,act}){const[show,setShow]=useState(false);return <><SectionHead eyebrow="MEDICATION ROUTINE" title="Your medicines" desc="Keep your prescribed medication schedule organised." action={<button className="primary" onClick={()=>setShow(!show)}><Plus size={17}/> Add medicine</button>}/>{show&&<form className="formpanel" onSubmit={e=>{e.preventDefault();const form=e.currentTarget;let f=new FormData(form);act(async()=>{await apiPost('/medications',{name:f.get('name'),dosage:f.get('dosage'),schedule_time:f.get('time'),instructions:f.get('instructions')});setShow(false)})}}><h3>New medication</h3><div className="formgrid"><Field label="Medicine name"><input name="name" required placeholder="Medicine name"/></Field><Field label="Dosage"><input name="dosage" required placeholder="e.g. 1 tablet"/></Field><Field label="Reminder time"><input name="time" type="time" required/></Field><Field label="Instructions"><input name="instructions" placeholder="e.g. After food"/></Field></div><button className="primary">Save medication</button></form>}<div className="panel">{data.medications.length?data.medications.map(m=><div className="medrow large" key={m.id}><div className="medicon"><Pill/></div><div className="medinfo"><b>{m.name}</b><small>{m.dosage} · {m.instructions||'No additional instructions'}</small></div><span className="time"><Clock size={14}/>{m.schedule_time}</span><button className="iconbtn" title="Delete" onClick={()=>act(()=>apiDelete('/medications/'+m.id))}><Trash2 size={17}/></button><button className="softbtn" onClick={()=>act(()=>apiPost('/doses',{medication_id:m.id,status:'taken'}))}>Log taken</button><button className="softbtn" onClick={()=>act(()=>apiPost('/doses',{medication_id:m.id,status:'skipped'}))}>Log skipped</button></div>):<Empty icon={Pill} title="Your medication list is empty" text="Add medicines exactly as prescribed by your healthcare professional."/>}</div><div className="panel mt"><h3>Recent dose activity</h3>{data.doses.length?data.doses.slice(0,8).map(d=><div className="listrow" key={d.id}><span>{d.medication}</span><small>{d.scheduled_for}</small><span className={'status '+d.status}>{d.status}</span></div>):<p className="muted">Dose entries will appear here when you log them.</p>}</div></>}
+let tokenGet=()=>localStorage.getItem('ec_token');
+async function apiPost(p,b){
+  let r=await fetch(API+p,{
+    method:'POST',
+    headers:{'Content-Type':'application/json',Authorization:'Bearer '+tokenGet()},
+    body:JSON.stringify(b)
+  });
+  let d=await r.json();
+  if(r.status===401){
+    notifySessionExpired();
+    throw Error("Your session has expired. Please log in again.");
+  }
+  if(!r.ok) throw Error(d.error || 'Request failed');
+  return d;
+}
+async function apiDelete(p){
+  let r=await fetch(API+p,{
+    method:'DELETE',
+    headers:{Authorization:'Bearer '+tokenGet()}
+  });
+  let d=await r.json();
+  if(r.status===401){
+    notifySessionExpired();
+    throw Error("Your session has expired. Please log in again.");
+  }
+  if(!r.ok) throw Error(d.error || 'Request failed');
+  return d;
+}
+async function apiUpload(path, formData){
+  const r=await fetch(API+path,{method:'POST',headers:{Authorization:'Bearer '+tokenGet()},body:formData});
+  let d={};try{d=await r.json();}catch{}
+  if(r.status===401){notifySessionExpired();throw Error("Your session has expired. Please log in again.");}
+  if(!r.ok)throw Error(d.error||'Upload failed');
+  return d;
+}
+async function apiDownload(path, filename){
+  const r=await fetch(API+path,{headers:{Authorization:'Bearer '+tokenGet()}});
+  if(r.status===401){notifySessionExpired();throw Error("Your session has expired. Please log in again.");}
+  if(!r.ok){let d={};try{d=await r.json();}catch{};throw Error(d.error||'Download failed');}
+  const blob=await r.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');
+  a.href=url;a.download=filename||'medical-record';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
+}
+function Field({label,children}){return <div className="field"><label>{label}</label>{children}</div>}
+function Activities({ data, act }) {
+  return (
+    <>
+      <SectionHead
+        eyebrow="MOVEMENT & WELLBEING"
+        title="Activity tracker"
+        desc="Celebrate movement in whatever way works for you."
+      />
+      <form
+        className="formpanel"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const form = e.currentTarget;
+          const f = new FormData(form);
+          act(async () => {
+            await apiPost('/activities', {
+              activity: f.get('activity'),
+              minutes: f.get('minutes'),
+              activity_date: f.get('date'),
+            });
+            form.reset();
+          });
+        }}
+      >
+        <h3>Record an activity</h3>
+        <div className="formgrid">
+          <Field label="Activity">
+            <input name="activity" placeholder="e.g. Morning walk" required />
+          </Field>
+          <Field label="Duration (minutes)">
+            <input name="minutes" type="number" min="1" max="1440" required placeholder="20" />
+          </Field>
+          <Field label="Date">
+            <input name="date" type="date" defaultValue={new Date().toISOString().slice(0, 10)} />
+          </Field>
+        </div>
+        <button className="primary"><Plus size={16} /> Save activity</button>
+      </form>
+      <div className="panel mt">
+        <h3>Activity history</h3>
+        {data.activities.length > 0 ? (
+          data.activities.map((x) => (
+            <div className="listrow" key={x.id}>
+              <b>{x.activity}</b>
+              <small>{x.activity_date}</small>
+              <span className="status taken">{x.minutes} min</span>
+            </div>
+          ))
+        ) : (
+          <Empty icon={Activity} title="No activity logged yet" text="Your activity entries will build a simple personal history." />
+        )}
+      </div>
+    </>
+  );
+}
+
+function Health({ data, act }) {
+  const [tab,setTab]=useState('documents');
+  const [busy,setBusy]=useState(false);
+  const [localError,setLocalError]=useState('');
+  const [analysisBusy,setAnalysisBusy]=useState(null);
+  const [analysisById,setAnalysisById]=useState({});
+  const documents=data.medicalDocuments||[], history=data.medicalHistory||[], expenses=data.medicalExpenses||[];
+  async function analyzeDocument(id){
+    setAnalysisBusy(id);setLocalError('');
+    try{
+      const result=await apiPost('/medical-documents/'+id+'/analyze',{});
+      setAnalysisById(prev=>({...prev,[id]:result}));
+    }catch(err){setLocalError(err.message||'Could not analyse this document.');}
+    finally{setAnalysisBusy(null);}
+  }
+  async function loadDocumentAnalysis(id){
+    try{const r=await fetch(API+'/medical-documents/'+id+'/analysis',{headers:{Authorization:'Bearer '+tokenGet()}});if(r.ok){const d=await r.json();if(d.status!=='not_analyzed')setAnalysisById(prev=>({...prev,[id]:d}));}}
+    catch{}
+  }
+  useEffect(()=>{documents.forEach(x=>{if(!analysisById[x.id]&&x.analysis_status&&x.analysis_status!=='not_analyzed')loadDocumentAnalysis(x.id);});},[documents]);
+  const total=expenses.reduce((sum,x)=>sum+Number(x.amount||0),0);
+  const monthKey=new Date().toLocaleDateString('en-CA').slice(0,7);
+  const monthTotal=expenses.filter(x=>(x.expense_date||'').startsWith(monthKey)).reduce((sum,x)=>sum+Number(x.amount||0),0);
+  async function uploadDocument(e){
+    e.preventDefault();const form=e.currentTarget;const fd=new FormData(form);setBusy(true);setLocalError('');
+    try{await apiUpload('/medical-documents',fd);form.reset();await act(async()=>{});}
+    catch(err){setLocalError(err.message||'Could not upload this document.');}
+    finally{setBusy(false);}
+  }
+  return <>
+    <SectionHead eyebrow="YOUR PERSONAL HEALTH JOURNAL" title="Health & medical records" desc="Keep measurements, medical reports, prescriptions, medical history and healthcare expenses together."/>
+    <div className="checks" style={{gridTemplateColumns:'repeat(auto-fit,minmax(145px,1fr))'}}>
+      {[['documents','Reports & prescriptions'],['history','Medical history'],['expenses','Medical expenses'],['measurements','Health measurements']].map(([id,label])=><button type="button" className={tab===id?'primary':'softbtn'} key={id} onClick={()=>setTab(id)}>{label}</button>)}
+    </div>
+    {tab==='documents'&&<>
+      <form className="formpanel" onSubmit={uploadDocument}>
+        <h3>Upload a medical document</h3><p className="muted">Upload a PDF, JPG, PNG or WEBP file (maximum 2 MB per file).</p>
+        <div className="formgrid">
+          <Field label="Document title"><input name="title" required maxLength="180" placeholder="e.g. CBC blood test – November"/></Field>
+          <Field label="Document category"><select name="category"><option value="lab_report">Blood / laboratory report</option><option value="imaging">X-ray, MRI, CT or ECG</option><option value="prescription">Prescription</option><option value="other">Other medical document</option></select></Field>
+          <Field label="Report / prescription date"><input name="document_date" type="date" defaultValue={new Date().toLocaleDateString('en-CA')} required/></Field>
+          <Field label="Choose PDF or image"><input name="file" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/jpeg,image/png,image/webp" required/></Field>
+        </div>
+        <Field label="Notes (optional)"><textarea name="notes" rows="2" maxLength="500" placeholder="Doctor, test centre or any useful note"/></Field>
+        <button className="primary" disabled={busy}>{busy?'Uploading…':'Upload document'}</button>{localError&&<p className="error">{localError}</p>}
+      </form>
+      <div className="panel mt"><h3>Saved reports and prescriptions</h3>{documents.length?documents.map(x=><div className="listrow" key={x.id}>
+        <div style={{flex:'1 1 180px'}}><b>{x.title}</b><small>{x.category.replace('_',' ')} · {x.document_date} · {x.original_filename}</small>{x.notes&&<small>{x.notes}</small>}</div>
+        <button type="button" className="softbtn" onClick={()=>act(()=>apiDownload('/medical-documents/'+x.id+'/download',x.original_filename))}>View / download</button>
+        <button type="button" className="primary" disabled={analysisBusy===x.id} onClick={()=>analyzeDocument(x.id)}>{analysisBusy===x.id?'Extracting…':'Extract report data'}</button>
+        <button type="button" className="iconbtn" title="Delete document" onClick={()=>{if(window.confirm('Delete this medical document?'))act(()=>apiDelete('/medical-documents/'+x.id));}}><Trash2 size={16}/></button>
+        {analysisById[x.id]&&<div style={{flex:'1 1 100%',padding:14,borderRadius:12,background:'#edf4ed',border:'1px solid #d6e3d6'}}>
+          <b style={{display:'block',color:'#31533d',marginBottom:6}}>Extracted information · Please verify</b>
+          <small style={{display:'block',color:'#718277',lineHeight:1.6,marginBottom:8}}>{analysisById[x.id].warning||'Review the extracted values against the original document.'}</small>
+          {(analysisById[x.id].extracted_data?.values||[]).length ? analysisById[x.id].extracted_data.values.map((v,i)=><div key={i} style={{display:'flex',justifyContent:'space-between',gap:12,padding:'6px 0',borderTop:'1px solid #d8e4d8',fontSize:12}}><span>{v.parameter.replaceAll('_',' ')}</span><b>{v.value} {v.unit}</b></div>):<small className="muted">No lab values were confidently identified. You can still view the original report.</small>}
+          <small style={{display:'block',marginTop:8,color:'#8a6b43'}}>This is automated text extraction, not an AI diagnosis. Do not use extracted values for treatment decisions without checking the original report and a clinician.</small>
+        </div>}
+      </div>):<p className="muted">No documents uploaded yet.</p>}</div>
+    </>}
+    {tab==='history'&&<>
+      <form className="formpanel" onSubmit={e=>{e.preventDefault();const form=e.currentTarget;const d=Object.fromEntries(new FormData(form));act(async()=>{await apiPost('/medical-history',d);form.reset();});}}>
+        <h3>Add to medical history</h3><div className="formgrid">
+          <Field label="Record type"><select name="entry_type"><option value="condition">Existing condition</option><option value="illness">Past illness</option><option value="surgery">Surgery</option><option value="allergy">Allergy</option><option value="event">Medical event</option><option value="other">Other</option></select></Field>
+          <Field label="Title"><input name="title" required maxLength="180" placeholder="e.g. Diabetes / Penicillin allergy"/></Field>
+          <Field label="Date"><input name="entry_date" type="date" defaultValue={new Date().toLocaleDateString('en-CA')} required/></Field>
+          <Field label="Doctor name"><input name="doctor_name" maxLength="150" placeholder="Optional"/></Field>
+          <Field label="Hospital / clinic"><input name="hospital_name" maxLength="150" placeholder="Optional"/></Field>
+        </div><Field label="Details / notes"><textarea name="details" rows="3" maxLength="2000" placeholder="Add relevant details"/></Field>
+        <button className="primary">Save medical history</button>
+      </form>
+      <div className="panel mt"><h3>Medical history timeline</h3>{history.length?history.map(x=><div className="listrow" key={x.id}><div style={{flex:'1 1 180px'}}><b>{x.title}</b><small>{x.entry_type} · {x.entry_date}</small><small>{[x.doctor_name,x.hospital_name].filter(Boolean).join(' · ')}</small>{x.details&&<small>{x.details}</small>}</div><button className="iconbtn" title="Delete entry" onClick={()=>{if(window.confirm('Delete this history entry?'))act(()=>apiDelete('/medical-history/'+x.id));}}><Trash2 size={16}/></button></div>):<p className="muted">No medical history entries yet.</p>}</div>
+    </>}
+    {tab==='expenses'&&<>
+      <div className="stat" style={{margin:'12px 0 18px'}}><span className="staticon"><ClipboardList/></span><div><small>Total recorded healthcare expenses</small><strong>₹{total.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}</strong><span>₹{monthTotal.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})} this month · ₹{total.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})} overall</span></div></div>
+      <form className="formpanel" onSubmit={e=>{e.preventDefault();const form=e.currentTarget;const d=Object.fromEntries(new FormData(form));act(async()=>{await apiPost('/medical-expenses',d);form.reset();});}}>
+        <h3>Add a medical expense</h3><div className="formgrid">
+          <Field label="Expense category"><select name="category"><option value="consultation">Doctor consultation</option><option value="medicine">Medicines</option><option value="diagnostic_test">Diagnostic tests</option><option value="hospital">Hospital</option><option value="treatment">Treatment</option><option value="other">Other</option></select></Field>
+          <Field label="Amount (₹)"><input name="amount" type="number" min="0.01" max="10000000" step="0.01" required placeholder="e.g. 850"/></Field>
+          <Field label="Date"><input name="expense_date" type="date" defaultValue={new Date().toLocaleDateString('en-CA')} required/></Field>
+          <Field label="Description"><input name="description" maxLength="300" placeholder="Optional details"/></Field>
+        </div><button className="primary">Save expense</button>
+      </form>
+      <div className="panel mt"><h3>Expense history</h3>{expenses.length?expenses.map(x=><div className="listrow" key={x.id}><div style={{flex:'1 1 180px'}}><b>{x.category.replace('_',' ')}</b><small>{x.expense_date} · {x.description}</small></div><strong>₹{Number(x.amount).toLocaleString('en-IN',{minimumFractionDigits:2})}</strong><button className="iconbtn" title="Delete expense" onClick={()=>{if(window.confirm('Delete this expense?'))act(()=>apiDelete('/medical-expenses/'+x.id));}}><Trash2 size={16}/></button></div>):<p className="muted">No medical expenses recorded yet.</p>}</div>
+    </>}
+    {tab==='measurements'&&<>
+      <form className="formpanel" onSubmit={e=>{e.preventDefault();const form=e.currentTarget;const f=new FormData(form);act(async()=>{await apiPost('/measurements',{kind:f.get('kind'),value:f.get('value'),unit:f.get('unit'),recorded_at:new Date().toISOString().slice(0,16)});form.reset();});}}>
+        <h3>Add a health measurement</h3><div className="formgrid"><Field label="Measurement"><select name="kind"><option value="blood_pressure">Blood pressure</option><option value="cholesterol">Cholesterol</option><option value="weight">Weight</option></select></Field><Field label="Value"><input name="value" required placeholder="e.g. 120/80"/></Field><Field label="Unit"><input name="unit" required placeholder="e.g. mmHg, mg/dL, kg"/></Field></div><button className="primary"><Plus size={16}/> Save measurement</button></form>
+      <div className="panel mt"><h3>Measurement history</h3>{data.measurements.length?data.measurements.map(x=><div className="listrow" key={x.id}><b>{x.kind.replace('_',' ')}</b><strong>{x.value} {x.unit}</strong><small>{x.recorded_at}</small></div>):<Empty icon={ClipboardList} title="No measurements recorded" text="Add a measurement to start your personal health journal."/ >}</div>
+      <p className="notice"><ShieldCheck size={17}/> These are self-recorded values, not clinical interpretation. Discuss readings with a qualified healthcare professional.</p>
+    </>}
+  </>;
+}
+
+function Sharing({data,act}){return <><SectionHead eyebrow="YOUR PRIVACY CONTROLS" title="Caregiver sharing" desc="Choose whether to share selected summaries with someone you trust."/><div className="notice"><ShieldCheck size={19}/> Sharing is optional. Only the scopes you select are included. You can revoke access at any time.</div><form className="formpanel" onSubmit={e=>{e.preventDefault();const form=e.currentTarget;let f=new FormData(form);act(()=>apiPost('/permissions',{caregiver_email:f.get('email'),scopes:f.getAll('scope')}));e.currentTarget.reset()}}><h3>Invite a caregiver</h3><Field label="Caregiver account email"><input name="email" type="email" required placeholder="caregiver@example.com"/></Field><p className="muted">Select what this person can view:</p><div className="checks"><label><input type="checkbox" name="scope" value="medications"/> View medication schedule and dose log</label><label><input type="checkbox" name="scope" value="manage_medications"/> Manage medication reminders and dose logs (includes view access)</label><label><input type="checkbox" name="scope" value="activity"/> Activity entries</label><label><input type="checkbox" name="scope" value="health"/> Health measurements</label><label><input type="checkbox" name="scope" value="medical_records"/> Medical reports, prescriptions and history (view)</label><label><input type="checkbox" name="scope" value="expenses"/> Medical expenses (view)</label></div><button className="primary">Grant selected access</button></form><div className="panel mt"><h3>Sharing permissions</h3>{data.permissions.length?data.permissions.map(p=><div className="listrow permission" key={p.id}><div><b>{p.caregiver_email}</b><small>{p.scopes.join(' · ')}</small></div><span className={'status '+(p.active?'taken':'missed')}>{p.active?'Active':'Revoked'}</span>{p.active&&<button className="softbtn danger" onClick={()=>act(()=>apiDelete('/permissions/'+p.id))}>Revoke access</button>}</div>):<p className="muted">No caregiver permissions have been created.</p>}</div></>}
 
 
-# Lightweight, explainable extraction for text-based PDFs. This is not a diagnostic ML model.
-# OCR for image/scanned documents is attempted only when Tesseract is available in the runtime.
-MEDICAL_VALUE_PATTERNS = [
-    ("haemoglobin", r"\b(?:haemoglobin|hemoglobin|hb)\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(g/dl|g/l)?"),
-    ("fasting_glucose", r"\b(?:fasting\s+blood\s+glucose|fasting\s+glucose|fbs)\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(mg/dl|mmol/l)?"),
-    ("random_glucose", r"\b(?:random\s+blood\s+sugar|random\s+glucose|rbs)\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(mg/dl|mmol/l)?"),
-    ("total_cholesterol", r"\b(?:total\s+cholesterol|cholesterol)\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(mg/dl|mmol/l)?"),
-    ("hdl", r"\bhdl(?:\s+cholesterol)?\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(mg/dl|mmol/l)?"),
-    ("ldl", r"\bldl(?:\s+cholesterol)?\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(mg/dl|mmol/l)?"),
-    ("triglycerides", r"\btriglycerides?\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(mg/dl|mmol/l)?"),
-    ("creatinine", r"\bcreatinine\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(mg/dl|umol/l|µmol/l)?"),
-    ("tsh", r"\btsh\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(uiu/ml|miu/l)?"),
-    ("vitamin_d", r"\b(?:25\s*[- ]?oh\s+vitamin\s+d|vitamin\s+d)\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(ng/ml|nmol/l)?"),
-]
+function CaregiverDashboard({ownerEmail,setOwnerEmail,summary,loading,onLookup,onClear,onCreateMedication,onUpdateMedication,onLogDose}){
+  const scopes=summary?.shared_scopes || [];
+  const canManage=Boolean(summary?.can_manage_medications);
+  const [showAdd,setShowAdd]=useState(false);
+  const [saving,setSaving]=useState(false);
+  const [formError,setFormError]=useState('');
+  async function submitNewMedication(e){
+    e.preventDefault();
+    const f=new FormData(e.currentTarget);
+    setSaving(true);setFormError('');
+    try{
+      await onCreateMedication({name:f.get('name'),dosage:f.get('dosage'),schedule_time:f.get('schedule_time'),instructions:f.get('instructions')});
+      e.currentTarget.reset();setShowAdd(false);
+    }catch(err){setFormError(err.message||'Could not add the reminder.');}
+    finally{setSaving(false);}
+  }
+  async function update(id,payload){
+    setSaving(true);setFormError('');
+    try{await onUpdateMedication(id,payload);}
+    catch(err){setFormError(err.message||'Could not update the schedule.');}
+    finally{setSaving(false);}
+  }
+  async function logDose(medication_id,status){
+    setSaving(true);setFormError('');
+    try{await onLogDose({medication_id,status});}
+    catch(err){setFormError(err.message||'Could not record the dose.');}
+    finally{setSaving(false);}
+  }
+  return <>
+    <SectionHead eyebrow="APPROVED CAREGIVER ACCESS" title="Caregiver dashboard" desc="View shared information and, when authorised, help manage everyday medication reminders."/>
+    <form className="formpanel" onSubmit={onLookup}>
+      <h3>View a person’s shared summary</h3>
+      <Field label="ElderCare account email"><input type="email" value={ownerEmail} onChange={e=>setOwnerEmail(e.target.value)} placeholder="elderly.person@example.com" required /></Field>
+      <button className="primary" type="submit" disabled={loading}>{loading ? 'Checking access…' : 'Check access and view summary'}</button>
+      {summary && <button className="softbtn" type="button" onClick={onClear}>Clear summary</button>}
+    </form>
+    {!summary && <div className="notice mt"><ShieldCheck size={18}/> Access is checked by ElderCare. If permission has not been granted, has been revoked, or the email is incorrect, the information will not be shown.</div>}
+    {summary && <>
+      <div className="panel mt"><h3>Shared by {summary.owner?.name || 'ElderCare user'}</h3><p className="muted">{summary.owner?.email}</p><p className="muted">Approved categories: {scopes.map(s=>s==='manage_medications'?'medication management':s).join(' · ')}</p></div>
+      {scopes.includes('medications') && <div className="panel mt">
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+          <div><h3>Medication schedule</h3><p className="muted">{canManage?'You can manage reminders for this person. Prescribed dosage is read-only.':'View-only medication access.'}</p></div>
+          {canManage&&<button className="primary" type="button" onClick={()=>setShowAdd(v=>!v)}><Plus size={16}/> Add reminder</button>}
+        </div>
+        {showAdd&&canManage&&<form className="formpanel" onSubmit={submitNewMedication}>
+          <h3>Add a prescribed medicine reminder</h3>
+          <p className="muted">Enter the medicine and dosage exactly as written on the current prescription. This records the prescription information and sets a reminder; it does not prescribe or change treatment.</p>
+          <div className="formgrid">
+            <Field label="Medicine name"><input name="name" required maxLength="120" placeholder="Medicine name"/></Field>
+            <Field label="Prescribed dosage (record as written)"><input name="dosage" required maxLength="80" placeholder="e.g. 1 tablet"/></Field>
+            <Field label="Reminder time"><input name="schedule_time" type="time" required/></Field>
+            <Field label="Instructions"><input name="instructions" maxLength="250" placeholder="e.g. After food, as prescribed"/></Field>
+          </div>
+          <button className="primary" disabled={saving}>{saving?'Saving…':'Save reminder'}</button>
+          {formError&&<p className="error">{formError}</p>}
+        </form>}
+        {summary.medications?.length ? summary.medications.map((m,i)=><div className="listrow" key={m.id||i} style={{alignItems:'center',flexWrap:'wrap',gap:10}}>
+          <div style={{minWidth:140,flex:'1 1 160px'}}><b>{m.name}</b><small>{m.dosage} · {m.instructions||'As prescribed'}</small></div>
+          <span className={'status '+(m.active?'taken':'missed')}>{m.active?'Active':'Paused'}</span><span className="status taken">{m.schedule_time}</span>
+          {canManage&&<div style={{display:'flex',gap:7,flexWrap:'wrap'}}>
+            <button className="softbtn" type="button" disabled={saving||!m.active} onClick={()=>{const next=window.prompt('Enter the new reminder time (24-hour HH:MM):',m.schedule_time);if(next!==null&&/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(next))update(m.id,{schedule_time:next});else if(next!==null)window.alert('Please enter a valid time, for example 08:30.')}}>Change time</button>
+            <button className="softbtn" type="button" disabled={saving} onClick={()=>update(m.id,{active:!m.active})}>{m.active?'Pause reminder':'Resume reminder'}</button>
+            <button className="softbtn" type="button" disabled={saving||!m.active} onClick={()=>logDose(m.id,'taken')}>Mark taken</button>
+            <button className="softbtn" type="button" disabled={saving||!m.active} onClick={()=>logDose(m.id,'missed')}>Mark missed</button>
+          </div>}
+        </div>):<p className="muted">No medication reminders have been shared.</p>}
+        {formError&&<p className="error">{formError}</p>}
+        <h3 className="mt">Recent dose history</h3>
+        {summary.recent_doses?.length ? summary.recent_doses.map((d,i)=><div className="listrow" key={d.id||i}><b>{d.medication}</b><small>{d.scheduled_for}</small><span className={'status '+(d.status==='taken'?'taken':'missed')}>{d.status}</span></div>):<p className="muted">No dose history has been shared.</p>}
+        {canManage&&summary.care_actions?.length>0&&<><h3 className="mt">Caregiver activity log</h3>{summary.care_actions.map((a,i)=><div className="listrow" key={i}><b>{a.action.replace(/_/g,' ')}</b><small>{a.details} · {a.caregiver}</small><span className="muted">{a.created_at}</span></div>)}</>}
+        {canManage&&<p className="notice mt"><ShieldCheck size={17}/> Changes are recorded. Caregivers can manage reminder times and routine logs, but cannot change a prescribed dosage. Confirm treatment changes with the prescribing healthcare professional.</p>}
+      </div>}
+      {scopes.includes('activity') && <div className="panel mt"><h3>Activity records</h3>{summary.activities?.length ? summary.activities.map((a,i)=><div className="listrow" key={i}><b>{a.activity}</b><small>{a.activity_date}</small><span className="status taken">{a.minutes} min</span></div>):<p className="muted">No activity entries have been shared.</p>}</div>}
+      {scopes.includes('health') && <div className="panel mt"><h3>Health measurements</h3>{summary.measurements?.length ? summary.measurements.map((m,i)=><div className="listrow" key={i}><b>{String(m.kind || '').replace('_',' ')}</b><strong>{m.value} {m.unit}</strong><small>{m.recorded_at}</small></div>):<p className="muted">No health measurements have been shared.</p>}<p className="notice mt"><ShieldCheck size={17}/> These are user-recorded values, not clinical interpretation. Discuss readings with a qualified healthcare professional.</p></div>}
+      {scopes.includes('medical_records') && <div className="panel mt"><h3>Shared medical documents</h3>{summary.medical_documents?.length ? summary.medical_documents.map((d,i)=><div className="listrow" key={d.id||i}><div style={{flex:'1 1 180px'}}><b>{d.title}</b><small>{d.category.replace('_',' ')} · {d.document_date} · {d.original_filename}</small>{d.notes&&<small>{d.notes}</small>}</div><button className="softbtn" type="button" onClick={()=>act(()=>apiDownload('/caregiver/medical-documents/'+d.id+'/download?owner_email='+encodeURIComponent(ownerEmail),d.original_filename))}>Download</button></div>):<p className="muted">No medical documents have been shared.</p>}<h3 className="mt">Medical history</h3>{summary.medical_history?.length ? summary.medical_history.map((h,i)=><div className="listrow" key={h.id||i}><div><b>{h.title}</b><small>{h.entry_type} · {h.entry_date} · {[h.doctor_name,h.hospital_name].filter(Boolean).join(' · ')}</small>{h.details&&<small>{h.details}</small>}</div></div>):<p className="muted">No medical history has been shared.</p>}</div>}
+      {scopes.includes('expenses') && <div className="panel mt"><h3>Shared medical expenses</h3>{summary.medical_expenses?.length ? summary.medical_expenses.map((x,i)=><div className="listrow" key={x.id||i}><b>{x.category.replace('_',' ')}</b><small>{x.expense_date} · {x.description}</small><strong>₹{Number(x.amount).toLocaleString('en-IN',{minimumFractionDigits:2})}</strong></div>):<p className="muted">No medical expenses have been shared.</p>}</div>}
+      <p className="notice mt"><ShieldCheck size={17}/> Access depends on the account owner’s active permission. If access is revoked, a new check will be denied.</p>
+    </>}
+  </>;
+}
 
-
-def extract_medical_text(file_bytes, mime_type):
-    """Return extracted text and an explanatory extraction status."""
-    if mime_type == "application/pdf":
-        try:
-            from pypdf import PdfReader
-            from io import BytesIO
-            reader = PdfReader(BytesIO(file_bytes))
-            text_parts = [(page.extract_text() or "") for page in reader.pages[:20]]
-            text = "\n".join(text_parts).strip()
-            if text:
-                return text[:50000], "text_extracted", "Text extracted from PDF. Please verify every value against the original report."
-            return "", "ocr_required", "This PDF appears to be scanned or image-only. OCR is not available in this deployment yet; please enter values manually or upload a text-based PDF."
-        except Exception:
-            return "", "extraction_failed", "Could not read this PDF. Please check that it is a valid, unencrypted PDF."
-    if mime_type.startswith("image/"):
-        try:
-            from PIL import Image
-            import pytesseract
-            from io import BytesIO
-            image = Image.open(BytesIO(file_bytes)).convert("RGB")
-            text = pytesseract.image_to_string(image, timeout=12).strip()
-            if text:
-                return text[:50000], "text_extracted", "OCR text extracted. Image OCR can make mistakes; verify every value against the original report."
-            return "", "no_text_found", "No readable text was found in this image. Try a clearer image or enter values manually."
-        except Exception:
-            return "", "ocr_unavailable", "Image OCR is not installed in the current server runtime. PDF text extraction is available; image OCR will be enabled in a later deployment step."
-    return "", "unsupported", "This document type is not supported for extraction."
-
-
-def parse_medical_values(text):
-    normalized = re.sub(r"\s+", " ", text or "")
-    results = []
-    for key, pattern in MEDICAL_VALUE_PATTERNS:
-        match = re.search(pattern, normalized, flags=re.IGNORECASE)
-        if match:
-            results.append({"parameter": key, "value": match.group(1), "unit": (match.group(2) or "").strip(), "source_match": match.group(0)[:120]})
-    date_match = re.search(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2})\b", normalized)
-    return {"values": results, "possible_report_date": date_match.group(1) if date_match else None, "extraction_method": "pattern_based_text_extraction"}
-
-
-@app.post("/api/medical-documents/<int:item_id>/analyze")
-@jwt_required()
-def analyze_medical_document(item_id):
-    user = current_user()
-    document = MedicalDocument.query.filter_by(id=item_id, user_id=user.id).first()
-    if not document:
-        return fail("Medical document not found.", 404)
-    text, status, warning = extract_medical_text(document.file_data, document.mime_type)
-    extracted = parse_medical_values(text)
-    record = MedicalExtraction.query.filter_by(document_id=document.id, user_id=user.id).order_by(MedicalExtraction.created_at.desc()).first()
-    if not record:
-        record = MedicalExtraction(document_id=document.id, user_id=user.id)
-        db.session.add(record)
-    record.extracted_text = text
-    record.extracted_data = json.dumps(extracted)
-    record.status = status if extracted["values"] or status != "text_extracted" else "text_extracted_no_values"
-    record.warning = warning if extracted["values"] else (warning + " No supported lab values were confidently recognised.")
-    db.session.commit()
-    return jsonify({"document_id": document.id, "status": record.status, "warning": record.warning, "extracted_data": extracted, "review_required": True})
-
-
-@app.get("/api/medical-documents/<int:item_id>/analysis")
-@jwt_required()
-def get_medical_document_analysis(item_id):
-    user = current_user()
-    document = MedicalDocument.query.filter_by(id=item_id, user_id=user.id).first()
-    if not document:
-        return fail("Medical document not found.", 404)
-    record = MedicalExtraction.query.filter_by(document_id=document.id, user_id=user.id).order_by(MedicalExtraction.created_at.desc()).first()
-    if not record:
-        return jsonify({"document_id": document.id, "status": "not_analyzed", "review_required": True})
-    try:
-        extracted = json.loads(record.extracted_data or "{}")
-    except (TypeError, ValueError):
-        extracted = {}
-    return jsonify({"document_id": document.id, "status": record.status, "warning": record.warning, "extracted_data": extracted, "review_required": True})
-
-
-@app.route("/api/medical-documents", methods=["GET", "POST"])
-@jwt_required()
-def medical_documents():
-    u = current_user()
-    if request.method == "GET":
-        rows = MedicalDocument.query.filter_by(user_id=u.id).order_by(MedicalDocument.document_date.desc()).all()
-        return jsonify([{"id":x.id,"title":x.title,"category":x.category,"document_date":x.document_date,"notes":x.notes,"original_filename":x.original_filename,"mime_type":x.mime_type, "analysis_status": (MedicalExtraction.query.filter_by(document_id=x.id, user_id=u.id).order_by(MedicalExtraction.created_at.desc()).first().status if MedicalExtraction.query.filter_by(document_id=x.id, user_id=u.id).first() else "not_analyzed")} for x in rows])
-
-    upload = request.files.get("file")
-    title = (request.form.get("title") or "").strip()
-    category = (request.form.get("category") or "other").strip()
-    document_date = (request.form.get("document_date") or date.today().isoformat()).strip()
-    notes = (request.form.get("notes") or "").strip()[:500]
-    if not upload or not upload.filename:
-        return fail("Choose a PDF or image file to upload.")
-    if not title:
-        return fail("Document title is required.")
-    if category not in ALLOWED_MEDICAL_CATEGORIES:
-        return fail("Choose a valid document category.")
-    try:
-        datetime.strptime(document_date, "%Y-%m-%d")
-    except ValueError:
-        return fail("Document date must be a valid date.")
-    mime_type = (upload.mimetype or "").lower()
-    if mime_type not in ALLOWED_MEDICAL_MIME_TYPES:
-        return fail("Only PDF, JPG, PNG and WEBP files are allowed.")
-    file_data = upload.read(MAX_MEDICAL_FILE_BYTES + 1)
-    if not file_data:
-        return fail("The selected file is empty.")
-    signatures = {
-        "application/pdf": file_data.startswith(b"%PDF-"),
-        "image/jpeg": file_data.startswith(b"\\xff\\xd8\\xff"),
-        "image/png": file_data.startswith(b"\\x89PNG\\r\\n\\x1a\\n"),
-        "image/webp": len(file_data) >= 12 and file_data[:4] == b"RIFF" and file_data[8:12] == b"WEBP"
-    }
-    if not signatures.get(mime_type, False):
-        return fail("The file content does not match its selected file type.")
-    if len(file_data) > MAX_MEDICAL_FILE_BYTES:
-        return fail("File is too large. Please upload a file smaller than 2 MB.")
-    original_filename = os.path.basename(upload.filename).replace("\x00", "")[:180]
-    row = MedicalDocument(user_id=u.id, title=title[:180], category=category,
-        document_date=document_date, notes=notes, original_filename=original_filename,
-        mime_type=mime_type, file_data=file_data)
-    db.session.add(row)
-    db.session.commit()
-    return jsonify({"id":row.id,"title":row.title,"category":row.category,"document_date":row.document_date,
-        "notes":row.notes,"original_filename":row.original_filename,"mime_type":row.mime_type}), 201
-
-
-@app.get("/api/medical-documents/<int:item_id>/download")
-@jwt_required()
-def download_medical_document(item_id):
-    row = MedicalDocument.query.filter_by(id=item_id, user_id=current_user().id).first()
-    if not row:
-        return fail("Medical document not found.", 404)
-    from io import BytesIO
-    response = send_file(BytesIO(row.file_data), mimetype=row.mime_type,
-        as_attachment=True, download_name=row.original_filename)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    return response
-
-
-@app.delete("/api/medical-documents/<int:item_id>")
-@jwt_required()
-def delete_medical_document(item_id):
-    row = MedicalDocument.query.filter_by(id=item_id, user_id=current_user().id).first()
-    if not row:
-        return fail("Medical document not found.", 404)
-    db.session.delete(row)
-    db.session.commit()
-    return jsonify({"message":"Medical document deleted."})
-
-
-@app.get("/api/caregiver/medical-documents/<int:item_id>/download")
-@jwt_required()
-def caregiver_download_medical_document(item_id):
-    caregiver = current_user()
-    owner_email = request.args.get("owner_email", "").strip().lower()
-    owner = User.query.filter_by(email=owner_email).first()
-    if not owner:
-        return fail("Owner not found.", 404)
-    grant = Permission.query.filter_by(owner_id=owner.id, caregiver_email=caregiver.email, revoked_at=None).first()
-    if not grant or "medical_records" not in set(grant.scopes.split(",")):
-        return fail("No active permission to view medical records.", 403)
-    row = MedicalDocument.query.filter_by(id=item_id, user_id=owner.id).first()
-    if not row:
-        return fail("Medical document not found.", 404)
-    from io import BytesIO
-    response = send_file(BytesIO(row.file_data), mimetype=row.mime_type,
-        as_attachment=True, download_name=row.original_filename)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    return response
-
-
-@app.route("/api/medical-history", methods=["GET", "POST"])
-@jwt_required()
-def medical_history():
-    u = current_user()
-    if request.method == "GET":
-        rows = MedicalHistory.query.filter_by(user_id=u.id).order_by(MedicalHistory.entry_date.desc()).all()
-        return jsonify([{"id":x.id,"entry_type":x.entry_type,"title":x.title,"details":x.details,
-            "entry_date":x.entry_date,"doctor_name":x.doctor_name,"hospital_name":x.hospital_name} for x in rows])
-    d = request.get_json() or {}
-    entry_type = str(d.get("entry_type","other"))
-    title = str(d.get("title","")).strip()
-    entry_date = str(d.get("entry_date") or date.today().isoformat())
-    if entry_type not in ALLOWED_HISTORY_TYPES or not title:
-        return fail("Choose a valid history type and enter a title.")
-    try:
-        datetime.strptime(entry_date, "%Y-%m-%d")
-    except ValueError:
-        return fail("Enter a valid history date.")
-    row = MedicalHistory(user_id=u.id, entry_type=entry_type, title=title[:180],
-        details=str(d.get("details",""))[:2000], entry_date=entry_date,
-        doctor_name=str(d.get("doctor_name",""))[:150], hospital_name=str(d.get("hospital_name",""))[:150])
-    db.session.add(row); db.session.commit()
-    return jsonify({"id":row.id,"entry_type":row.entry_type,"title":row.title,"details":row.details,
-        "entry_date":row.entry_date,"doctor_name":row.doctor_name,"hospital_name":row.hospital_name}), 201
-
-
-@app.delete("/api/medical-history/<int:item_id>")
-@jwt_required()
-def delete_medical_history(item_id):
-    row = MedicalHistory.query.filter_by(id=item_id, user_id=current_user().id).first()
-    if not row: return fail("Medical history entry not found.", 404)
-    db.session.delete(row); db.session.commit()
-    return jsonify({"message":"Medical history entry deleted."})
-
-
-@app.route("/api/medical-expenses", methods=["GET", "POST"])
-@jwt_required()
-def medical_expenses():
-    u = current_user()
-    if request.method == "GET":
-        rows = MedicalExpense.query.filter_by(user_id=u.id).order_by(MedicalExpense.expense_date.desc()).all()
-        return jsonify([{"id":x.id,"category":x.category,"amount":str(x.amount),"expense_date":x.expense_date,"description":x.description} for x in rows])
-    d = request.get_json() or {}
-    category = str(d.get("category","other"))
-    description = str(d.get("description","")).strip()
-    expense_date = str(d.get("expense_date") or date.today().isoformat())
-    try:
-        amount = float(d.get("amount", 0))
-        datetime.strptime(expense_date, "%Y-%m-%d")
-    except (TypeError, ValueError):
-        return fail("Enter a valid amount and date.")
-    if category not in ALLOWED_EXPENSE_CATEGORIES or not math.isfinite(amount) or amount <= 0 or amount > 10000000:
-        return fail("Choose a valid category and enter an amount greater than zero.")
-    row = MedicalExpense(user_id=u.id, category=category, amount=amount,
-        expense_date=expense_date, description=description[:300])
-    db.session.add(row); db.session.commit()
-    return jsonify({"id":row.id,"category":row.category,"amount":str(row.amount),
-        "expense_date":row.expense_date,"description":row.description}), 201
-
-
-@app.delete("/api/medical-expenses/<int:item_id>")
-@jwt_required()
-def delete_medical_expense(item_id):
-    row = MedicalExpense.query.filter_by(id=item_id, user_id=current_user().id).first()
-    if not row: return fail("Medical expense not found.", 404)
-    db.session.delete(row); db.session.commit()
-    return jsonify({"message":"Medical expense deleted."})
-
-
-@app.post("/api/notifications/run-reminders")
-def run_reminders():
-    secret = os.getenv("REMINDER_CRON_SECRET")
-    if not secret or request.headers.get("X-Reminder-Secret") != secret:
-        return jsonify({"error": "Unauthorized"}), 401
-
-    now = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=5, minutes=30)
-    window_start = now - timedelta(minutes=10)
-
-    sent = 0
-    failed = 0
-
-    medications = Medication.query.filter_by(active=True).all()
-
-    for med in medications:
-        try:
-            scheduled_time = datetime.strptime(
-                med.schedule_time, "%H:%M"
-            ).time()
-
-            for day in (now.date(), (now - timedelta(days=1)).date()):
-                scheduled_dt = datetime.combine(day, scheduled_time)
-
-                if not (window_start < scheduled_dt <= now):
-                    continue
-
-                scheduled_for = scheduled_dt.strftime("%Y-%m-%d %H:%M")
-
-                already_sent = ReminderLog.query.filter_by(
-                    medication_id=med.id,
-                    scheduled_for=scheduled_for
-                ).first()
-
-                if already_sent:
-                    continue
-
-                user = db.session.get(User, med.user_id)
-                if not user:
-                    continue
-
-                send_brevo_email(
-                    user.email,
-                    "ElderCare medication reminder",
-                    f"<h2>Medication reminder</h2>"
-                    f"<p>It is time to take <b>{med.name}</b>.</p>"
-                    f"<p>Dosage: {med.dosage}</p>"
-                    f"<p>Instructions: {med.instructions or 'Follow your prescription.'}</p>"
-                )
-
-                db.session.add(ReminderLog(
-                    medication_id=med.id,
-                    scheduled_for=scheduled_for
-                ))
-                db.session.commit()
-                sent += 1
-
-        except Exception:
-            db.session.rollback()
-            failed += 1
-
-    return jsonify({
-        "message": "Reminder check completed.",
-        "emails_sent": sent,
-        "failed": failed
-    })
-   
-with app.app_context():
-    db.create_all()
-
-if __name__ == "__main__":
-    app.run(debug=os.getenv("FLASK_DEBUG","false").lower()=="true", port=5000)
+createRoot(document.getElementById('root')).render(<App/>);
