@@ -520,7 +520,7 @@ MEDICAL_VALUE_PATTERNS = [
     ("ldl", r"\bldl(?:\s+cholesterol)?\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(mg/dl|mmol/l)?"),
     ("triglycerides", r"\btriglycerides?\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(mg/dl|mmol/l)?"),
     ("creatinine", r"\bcreatinine\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(mg/dl|umol/l|µmol/l)?"),
-    ("tsh", r"\btsh\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(uiu/ml|miu/l)?"),
+    ("tsh", r"\btsh\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(µiu/ml|uiu/ml|miu/l)?"),
     ("vitamin_d", r"\b(?:25\s*[- ]?oh\s+vitamin\s+d|vitamin\s+d)\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(ng/ml|nmol/l)?"),
 ]
 
@@ -555,14 +555,100 @@ def extract_medical_text(file_bytes, mime_type):
 
 
 def parse_medical_values(text):
+    """Extract common lab values from both inline and table-style PDF text.
+
+    PDF text extractors often place the test name, result, unit and reference
+    interval on separate lines. This parser handles both layouts and preserves
+    the matched source text so users can verify each value.
+    """
+    lines = [re.sub(r"\s+", " ", line).strip() for line in (text or "").splitlines()]
+    lines = [line for line in lines if line]
     normalized = re.sub(r"\s+", " ", text or "")
     results = []
+    seen = set()
+
+    # First pass: inline formats such as "Haemoglobin: 12.5 g/dL".
     for key, pattern in MEDICAL_VALUE_PATTERNS:
         match = re.search(pattern, normalized, flags=re.IGNORECASE)
         if match:
-            results.append({"parameter": key, "value": match.group(1), "unit": (match.group(2) or "").strip(), "source_match": match.group(0)[:120]})
-    date_match = re.search(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2})\b", normalized)
-    return {"values": results, "possible_report_date": date_match.group(1) if date_match else None, "extraction_method": "pattern_based_text_extraction"}
+            results.append({
+                "parameter": key,
+                "value": match.group(1),
+                "unit": (match.group(2) or "").strip(),
+                "source_match": match.group(0)[:120]
+            })
+            seen.add(key)
+
+    # Second pass: table extraction where label, result and unit are separate lines.
+    labels = [
+        ("haemoglobin", r"^(?:haemoglobin|hemoglobin|hb)$"),
+        ("fasting_glucose", r"^(?:fasting blood glucose|fasting glucose|fbs)$"),
+        ("random_glucose", r"^(?:random blood sugar|random glucose|rbs)$"),
+        ("total_cholesterol", r"^(?:total cholesterol|cholesterol)$"),
+        ("hdl", r"^hdl(?: cholesterol)?$"),
+        ("ldl", r"^ldl(?: cholesterol)?$"),
+        ("triglycerides", r"^triglycerides?$"),
+        ("creatinine", r"^creatinine$"),
+        ("tsh", r"^tsh$"),
+        ("vitamin_d", r"^(?:25[- ]?oh vitamin d|vitamin d)$"),
+        ("white_blood_cell_count", r"^(?:white blood cell count|wbc|total leucocyte count|tlc)$"),
+        ("platelet_count", r"^(?:platelet count|platelets)$"),
+    ]
+    number_unit = re.compile(
+        r"^\s*([0-9]+(?:\.[0-9]+)?)\s*"
+        r"(g/dl|g/l|mg/dl|mmol/l|10\^?3/?(?:µl|ul)|"
+        r"uiu/ml|miu/l|umol/l|µmol/l|ng/ml|nmol/l)?\s*$",
+        re.IGNORECASE
+    )
+    for idx, line in enumerate(lines):
+        clean_label = re.sub(r"[:\-]+$", "", line).strip().lower()
+        for key, label_pattern in labels:
+            if key in seen or not re.match(label_pattern, clean_label, re.IGNORECASE):
+                continue
+            # Look at the same line after a colon, then the next few lines.
+            candidates = []
+            if ":" in line:
+                candidates.append(line.split(":", 1)[1].strip())
+            candidates.extend(lines[idx + 1:idx + 4])
+            for candidate in candidates:
+                candidate = candidate.strip()
+                m = number_unit.match(candidate)
+                if m:
+                    unit = (m.group(2) or "").strip()
+                    if not unit:
+                        # In many extracted PDF tables, the unit occupies its own line.
+                        next_idx = idx + 1 + candidates.index(candidate) + 1
+                        if next_idx < len(lines) and re.fullmatch(
+                            r"(?:g/dl|g/l|mg/dl|mmol/l|10\^?3/?(?:µl|ul)|"
+                            r"uiu/ml|µiu/ml|miu/l|umol/l|µmol/l|ng/ml|nmol/l)",
+                            lines[next_idx], re.IGNORECASE
+                        ):
+                            unit = lines[next_idx].strip()
+                    results.append({
+                        "parameter": key,
+                        "value": m.group(1),
+                        "unit": unit,
+                        "source_match": f"{line} {candidate} {unit}".strip()[:120]
+                    })
+                    seen.add(key)
+                    break
+
+    date_match = re.search(
+        r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2})\b",
+        normalized
+    )
+    if not date_match:
+        date_match = re.search(
+            r"\b(\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|"
+            r"May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|"
+            r"Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4})\b",
+            normalized, re.IGNORECASE
+        )
+    return {
+        "values": results,
+        "possible_report_date": date_match.group(1) if date_match else None,
+        "extraction_method": "pattern_based_text_extraction"
+    }
 
 
 @app.post("/api/medical-documents/<int:item_id>/analyze")
@@ -609,47 +695,85 @@ def medical_documents():
     u = current_user()
     if request.method == "GET":
         rows = MedicalDocument.query.filter_by(user_id=u.id).order_by(MedicalDocument.document_date.desc()).all()
-        return jsonify([{"id":x.id,"title":x.title,"category":x.category,"document_date":x.document_date,"notes":x.notes,"original_filename":x.original_filename,"mime_type":x.mime_type, "analysis_status": (MedicalExtraction.query.filter_by(document_id=x.id, user_id=u.id).order_by(MedicalExtraction.created_at.desc()).first().status if MedicalExtraction.query.filter_by(document_id=x.id, user_id=u.id).first() else "not_analyzed")} for x in rows])
+        return jsonify([{
+            "id": x.id, "title": x.title, "category": x.category,
+            "document_date": x.document_date, "notes": x.notes,
+            "original_filename": x.original_filename, "mime_type": x.mime_type,
+            "analysis_status": (
+                MedicalExtraction.query.filter_by(document_id=x.id, user_id=u.id)
+                .order_by(MedicalExtraction.created_at.desc()).first().status
+                if MedicalExtraction.query.filter_by(document_id=x.id, user_id=u.id).first()
+                else "not_analyzed"
+            )
+        } for x in rows])
 
     upload = request.files.get("file")
-    title = (request.form.get("title") or "").strip()
-    category = (request.form.get("category") or "other").strip()
-    document_date = (request.form.get("document_date") or date.today().isoformat()).strip()
-    notes = (request.form.get("notes") or "").strip()[:500]
     if not upload or not upload.filename:
         return fail("Choose a PDF or image file to upload.")
-    if not title:
-        return fail("Document title is required.")
-    if category not in ALLOWED_MEDICAL_CATEGORIES:
-        return fail("Choose a valid document category.")
-    try:
-        datetime.strptime(document_date, "%Y-%m-%d")
-    except ValueError:
-        return fail("Document date must be a valid date.")
+
     mime_type = (upload.mimetype or "").lower()
     if mime_type not in ALLOWED_MEDICAL_MIME_TYPES:
         return fail("Only PDF, JPG, PNG and WEBP files are allowed.")
+
     file_data = upload.read(MAX_MEDICAL_FILE_BYTES + 1)
     if not file_data:
         return fail("The selected file is empty.")
     signatures = {
         "application/pdf": file_data.startswith(b"%PDF-"),
-        "image/jpeg": file_data.startswith(b"\\xff\\xd8\\xff"),
-        "image/png": file_data.startswith(b"\\x89PNG\\r\\n\\x1a\\n"),
+        "image/jpeg": file_data.startswith(bytes([0xff, 0xd8, 0xff])),
+        "image/png": file_data.startswith(bytes([0x89]) + b"PNG\r\n\x1a\n"),
         "image/webp": len(file_data) >= 12 and file_data[:4] == b"RIFF" and file_data[8:12] == b"WEBP"
     }
     if not signatures.get(mime_type, False):
         return fail("The file content does not match its selected file type.")
     if len(file_data) > MAX_MEDICAL_FILE_BYTES:
         return fail("File is too large. Please upload a file smaller than 2 MB.")
+
     original_filename = os.path.basename(upload.filename).replace("\x00", "")[:180]
-    row = MedicalDocument(user_id=u.id, title=title[:180], category=category,
-        document_date=document_date, notes=notes, original_filename=original_filename,
-        mime_type=mime_type, file_data=file_data)
+    # All descriptive fields are optional. Use safe defaults so upload is one simple action.
+    title = (request.form.get("title") or "").strip()[:180] or os.path.splitext(original_filename)[0][:180] or "Medical document"
+    category = (request.form.get("category") or "other").strip() or "other"
+    if category not in ALLOWED_MEDICAL_CATEGORIES:
+        category = "other"
+    document_date = (request.form.get("document_date") or "").strip()
+    if document_date:
+        try:
+            datetime.strptime(document_date, "%Y-%m-%d")
+        except ValueError:
+            document_date = ""
+    document_date = document_date or date.today().isoformat()
+    notes = (request.form.get("notes") or "").strip()[:500]
+
+    row = MedicalDocument(
+        user_id=u.id, title=title, category=category, document_date=document_date,
+        notes=notes, original_filename=original_filename, mime_type=mime_type,
+        file_data=file_data
+    )
     db.session.add(row)
+    db.session.flush()
+
+    # Automatically extract on upload; users do not need to choose a report type or date.
+    extracted_text, extraction_status, warning = extract_medical_text(file_data, mime_type)
+    extracted = parse_medical_values(extracted_text)
+    extraction = MedicalExtraction(
+        document_id=row.id, user_id=u.id,
+        extracted_text=extracted_text,
+        extracted_data=json.dumps(extracted),
+        status=(extraction_status if extracted["values"] or extraction_status != "text_extracted" else "text_extracted_no_values"),
+        warning=(warning if extracted["values"] else warning + " No supported lab values were confidently recognised.")
+    )
+    db.session.add(extraction)
     db.session.commit()
-    return jsonify({"id":row.id,"title":row.title,"category":row.category,"document_date":row.document_date,
-        "notes":row.notes,"original_filename":row.original_filename,"mime_type":row.mime_type}), 201
+
+    return jsonify({
+        "id": row.id, "title": row.title, "category": row.category,
+        "document_date": row.document_date, "notes": row.notes,
+        "original_filename": row.original_filename, "mime_type": row.mime_type,
+        "analysis_status": extraction.status,
+        "warning": extraction.warning,
+        "extracted_data": extracted,
+        "review_required": True
+    }), 201
 
 
 @app.get("/api/medical-documents/<int:item_id>/download")
