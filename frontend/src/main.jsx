@@ -1,10 +1,48 @@
 import React,{useEffect,useState} from 'react';import{createRoot}from'react-dom/client';import{Heart,LayoutDashboard,Pill,Activity,ClipboardList,Users,LogOut,Plus,CheckCircle2,Clock,ShieldCheck,Menu, X,Trash2,Leaf,ArrowUpRight}from'lucide-react';import'./style.css';
 const API=import.meta.env.VITE_API_URL || 'http://127.0.0.1:5000/api';
+function getTokenExpiry(token) {
+  try {
+    const payload = JSON.parse(
+      atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))
+    );
+    return payload.exp * 1000;
+  } catch {
+    return 0;
+  }
+}
+
+function notifySessionExpired() {
+  window.dispatchEvent(new Event('ec-session-expired'));
+}
 function App(){const[token,setToken]=useState(localStorage.getItem('ec_token')||'');const[user,setUser]=useState(JSON.parse(localStorage.getItem('ec_user')||'null'));const[page,setPage]=useState('Dashboard');const[data,setData]=useState({medications:[],doses:[],activities:[],measurements:[],permissions:[]});const[busy,setBusy]=useState(false);const[msg,setMsg]=useState('');const[mobile,setMobile]=useState(false);
 const headers=()=>({'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})});
-async function api(path,method='GET',body){const r=await fetch(API+path,{method,headers:headers(),...(body?{body:JSON.stringify(body)}:{})});const d=await r.json();if(!r.ok)throw Error(d.error||'Request failed');return d}
-async function refresh(){if(!token)return;try{const keys=['medications','doses','activities','measurements','permissions'];const vals=await Promise.all(keys.map(k=>api('/'+k)));setData(Object.fromEntries(keys.map((k,i)=>[k,vals[i]])))}catch(e){setMsg(e.message)}}
+async function api(path,method='GET',body){const r=await fetch(API+path,{method,headers:headers(),...(body?{body:JSON.stringify(body)}:{})});const d=await r.json();return d}
+async function refresh(){if(!token)return;try{const keys=['medications','doses','activities','measurements','permissions'];const vals=await Promise.all(keys.map(k=>api(if (r.status === 401) {
+  notifySessionExpired();
+  throw Error("Your session has expired. Please log in again.");
+}
+
+if (!r.ok) throw Error(d.error || 'Request failed');'/'+k)));setData(Object.fromEntries(keys.map((k,i)=>[k,vals[i]])))}catch(e){setMsg(e.message)}}
 useEffect(()=>{refresh()},[token]);
+               useEffect(() => {
+  if (!token) return;
+
+  const expiry = getTokenExpiry(token);
+  const remaining = expiry - Date.now();
+
+  if (remaining <= 0) {
+    logout();
+    setMsg("Your session has expired. Please log in again.");
+    return;
+  }
+
+  const timer = setTimeout(() => {
+    logout();
+    setMsg("Your session has expired. Please log in again.");
+  }, remaining);
+
+  return () => clearTimeout(timer);
+}, [token]);
                useEffect(() => {
   if (!token) return;
 
