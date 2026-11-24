@@ -170,11 +170,11 @@ return <div className="app"><aside className={mobile?'side open':'side'}><div cl
 function Auth({onSubmit,busy,msg}){
   const[mode,setMode]=useState('register');
   const isRegister=mode==='register';
-  const pageStyle={minHeight:'100vh',background:'linear-gradient(135deg,#f3f8f3 0%,#f8f6ef 52%,#edf5f1 100%)',padding:'clamp(18px,4vw,54px)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:'inherit'};
+  const pageStyle={minHeight:'100vh',background:'linear-gradient(135deg,#dce9df 0%,#e5e7d9 52%,#d2e2d8 100%)',padding:'clamp(18px,4vw,54px)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:'inherit'};
   const shellStyle={width:'min(1180px,100%)',display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(min(100%,390px),1fr))',background:'#fff',borderRadius:30,overflow:'hidden',boxShadow:'0 28px 90px rgba(38,75,57,.13)',border:'1px solid #e4eee6'};
   return <div style={pageStyle}>
     <div style={shellStyle}>
-      <section style={{padding:'clamp(28px,5vw,62px)',backgroundImage:'linear-gradient(90deg,rgba(235,245,237,.96) 0%,rgba(240,246,238,.88) 54%,rgba(239,245,236,.46) 100%),url(/eldercare-care-hands.png)',backgroundSize:'cover',backgroundPosition:'center',backgroundRepeat:'no-repeat',display:'flex',flexDirection:'column',justifyContent:'space-between',gap:34,minHeight:600}}>
+      <section style={{padding:'clamp(28px,5vw,62px)',backgroundImage:'linear-gradient(90deg,rgba(211,229,215,.96) 0%,rgba(220,231,211,.89) 54%,rgba(214,229,216,.58) 100%),url(/eldercare-care-hands.png)',backgroundSize:'cover',backgroundPosition:'center',backgroundRepeat:'no-repeat',display:'flex',flexDirection:'column',justifyContent:'space-between',gap:34,minHeight:600}}>
         <div>
           <div style={{display:'flex',alignItems:'center',gap:12,color:'#214c3c',fontSize:25,fontWeight:800,letterSpacing:'-.7px'}}>
             <span style={{width:48,height:48,borderRadius:16,display:'grid',placeItems:'center',background:'#fff',boxShadow:'0 6px 20px #234b3514'}}><Heart size={25}/></span>
