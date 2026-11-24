@@ -128,9 +128,19 @@ class Permission(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     owner_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
     caregiver_email = db.Column(db.String(180), nullable=False, index=True)
-    scopes = db.Column(db.String(200), nullable=False)  # comma-separated: medications,activity,health
+    scopes = db.Column(db.String(200), nullable=False)  # medications, manage_medications, activity, health
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     revoked_at = db.Column(db.DateTime, nullable=True)
+
+
+class CareActionLog(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    owner_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    caregiver_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    medication_id = db.Column(db.Integer, db.ForeignKey("medication.id"), nullable=True, index=True)
+    action = db.Column(db.String(40), nullable=False)
+    details = db.Column(db.String(500), default="")
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
 def current_user():
     return db.session.get(User, int(get_jwt_identity()))
@@ -282,9 +292,12 @@ def permissions():
     d=request.get_json() or {}
     email=d.get("caregiver_email","").strip().lower()
     scopes=d.get("scopes",[])
-    allowed={"medications","activity","health"}
-    if "@" not in email or not scopes or not set(scopes).issubset(allowed): return fail("Provide caregiver email and valid sharing scopes.")
-    p=Permission(owner_id=u.id,caregiver_email=email,scopes=",".join(sorted(set(scopes))))
+    allowed={"medications","manage_medications","activity","health"}
+    scopes=set(scopes)
+    if "manage_medications" in scopes:
+        scopes.add("medications")
+    if "@" not in email or not scopes or not scopes.issubset(allowed): return fail("Provide caregiver email and valid sharing scopes.")
+    p=Permission(owner_id=u.id,caregiver_email=email,scopes=",".join(sorted(scopes)))
     db.session.add(p); db.session.commit()
     return jsonify({"id":p.id,"caregiver_email":p.caregiver_email,"scopes":p.scopes.split(","),"active":True}),201
 
@@ -308,13 +321,93 @@ def caregiver_summary():
     scopes=set(grant.scopes.split(","))
     out={"owner":{"name":owner.name,"email":owner.email},"shared_scopes":sorted(scopes)}
     if "medications" in scopes:
-        out["medications"]=[{"name":m.name,"dosage":m.dosage,"schedule_time":m.schedule_time} for m in Medication.query.filter_by(user_id=owner.id,active=True).all()]
-        out["recent_doses"]=[{"medication":db.session.get(Medication,x.medication_id).name,"scheduled_for":x.scheduled_for,"status":x.status} for x in Dose.query.filter_by(user_id=owner.id).order_by(Dose.scheduled_for.desc()).limit(20).all()]
+        out["medications"]=[{"id":m.id,"name":m.name,"dosage":m.dosage,"instructions":m.instructions,"schedule_time":m.schedule_time,"active":m.active} for m in Medication.query.filter_by(user_id=owner.id).order_by(Medication.schedule_time).all()]
+        out["recent_doses"]=[{"id":x.id,"medication_id":x.medication_id,"medication":db.session.get(Medication,x.medication_id).name,"scheduled_for":x.scheduled_for,"status":x.status} for x in Dose.query.filter_by(user_id=owner.id).order_by(Dose.scheduled_for.desc()).limit(20).all()]
+        out["can_manage_medications"]="manage_medications" in scopes
+        if out["can_manage_medications"]:
+            out["care_actions"]=[{"action":a.action,"details":a.details,"created_at":a.created_at.isoformat(timespec="minutes"),"caregiver":db.session.get(User,a.caregiver_id).name if db.session.get(User,a.caregiver_id) else "Caregiver"} for a in CareActionLog.query.filter_by(owner_id=owner.id).order_by(CareActionLog.created_at.desc()).limit(20).all()]
     if "activity" in scopes:
         out["activities"]=[{"activity":x.activity,"minutes":x.minutes,"activity_date":x.activity_date} for x in Activity.query.filter_by(user_id=owner.id).order_by(Activity.activity_date.desc()).limit(20).all()]
     if "health" in scopes:
         out["measurements"]=[{"kind":x.kind,"value":x.value,"unit":x.unit,"recorded_at":x.recorded_at} for x in Measurement.query.filter_by(user_id=owner.id).order_by(Measurement.recorded_at.desc()).limit(20).all()]
     return jsonify(out)
+
+def caregiver_grant(owner_email):
+    caregiver=current_user()
+    owner=User.query.filter_by(email=(owner_email or "").strip().lower()).first()
+    if not owner:
+        return None, None, fail("Owner not found.",404)
+    grant=Permission.query.filter_by(owner_id=owner.id,caregiver_email=caregiver.email,revoked_at=None).first()
+    if not grant:
+        return None, None, fail("No active caregiver permission for this account.",403)
+    scopes=set(grant.scopes.split(","))
+    if "medications" not in scopes or "manage_medications" not in scopes:
+        return None, None, fail("This caregiver has view-only medication access.",403)
+    return owner, caregiver, None
+
+
+@app.post("/api/caregiver/medications")
+@jwt_required()
+def caregiver_add_medication():
+    d=request.get_json() or {}
+    owner, caregiver, error=caregiver_grant(d.get("owner_email"))
+    if error: return error
+    name=str(d.get("name","")).strip()
+    dosage=str(d.get("dosage","")).strip()
+    schedule_time=str(d.get("schedule_time","")).strip()
+    if not name or not dosage:
+        return fail("Medicine name and the prescribed dosage shown on the prescription are required.")
+    try:
+        datetime.strptime(schedule_time,"%H:%M")
+    except ValueError:
+        return fail("Reminder time must use HH:MM.")
+    m=Medication(user_id=owner.id,name=name,dosage=dosage,instructions=str(d.get("instructions",""))[:250],schedule_time=schedule_time,active=True)
+    db.session.add(m)
+    db.session.flush()
+    db.session.add(CareActionLog(owner_id=owner.id,caregiver_id=caregiver.id,medication_id=m.id,action="medication_added",details=f"Added {m.name}; recorded prescribed dosage: {m.dosage}"))
+    db.session.commit()
+    return jsonify({"id":m.id,"name":m.name,"dosage":m.dosage,"instructions":m.instructions,"schedule_time":m.schedule_time,"active":m.active}),201
+
+
+@app.patch("/api/caregiver/medications/<int:item_id>")
+@jwt_required()
+def caregiver_update_medication(item_id):
+    d=request.get_json() or {}
+    owner, caregiver, error=caregiver_grant(d.get("owner_email"))
+    if error: return error
+    m=Medication.query.filter_by(id=item_id,user_id=owner.id).first()
+    if not m: return fail("Medication not found.",404)
+    # Caregivers can adjust reminders and instructions, but not prescribed dosage.
+    if "schedule_time" in d:
+        try: datetime.strptime(str(d["schedule_time"]),"%H:%M")
+        except ValueError: return fail("Reminder time must use HH:MM.")
+        m.schedule_time=str(d["schedule_time"])
+    if "instructions" in d: m.instructions=str(d["instructions"])[:250]
+    if "active" in d: m.active=bool(d["active"])
+    if "name" in d: m.name=str(d["name"]).strip()[:120]
+    db.session.add(CareActionLog(owner_id=owner.id,caregiver_id=caregiver.id,medication_id=m.id,action="medication_updated",details=f"Updated reminder/settings for {m.name}"))
+    db.session.commit()
+    return jsonify({"id":m.id,"name":m.name,"dosage":m.dosage,"instructions":m.instructions,"schedule_time":m.schedule_time,"active":m.active})
+
+
+@app.post("/api/caregiver/doses")
+@jwt_required()
+def caregiver_log_dose():
+    d=request.get_json() or {}
+    owner, caregiver, error=caregiver_grant(d.get("owner_email"))
+    if error: return error
+    m=Medication.query.filter_by(id=d.get("medication_id"),user_id=owner.id).first()
+    if not m: return fail("Medication not found.",404)
+    status=d.get("status")
+    if status not in ("taken","skipped","missed","pending"): return fail("Invalid dose status.")
+    scheduled_for=str(d.get("scheduled_for") or datetime.now().isoformat(timespec="minutes"))[:32]
+    dose=Dose(user_id=owner.id,medication_id=m.id,scheduled_for=scheduled_for,status=status)
+    db.session.add(dose)
+    db.session.flush()
+    db.session.add(CareActionLog(owner_id=owner.id,caregiver_id=caregiver.id,medication_id=m.id,action="dose_logged",details=f"{m.name}: marked {status} for {scheduled_for}"))
+    db.session.commit()
+    return jsonify({"id":dose.id,"medication_id":m.id,"medication":m.name,"scheduled_for":dose.scheduled_for,"status":dose.status}),201
+
 
 @app.post("/api/notifications/run-reminders")
 def run_reminders():
