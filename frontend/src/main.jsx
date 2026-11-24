@@ -145,6 +145,21 @@ async function loadCaregiverSummary(e){
     setCaregiverLoading(false);
   }
 }
+async function caregiverCreateMedication(payload){
+  await api('/caregiver/medications','POST',{...payload,owner_email:caregiverOwnerEmail});
+  await loadCaregiverSummary();
+  setMsg('Medication reminder added.');
+}
+async function caregiverUpdateMedication(id,payload){
+  await api('/caregiver/medications/'+id,'PATCH',{...payload,owner_email:caregiverOwnerEmail});
+  await loadCaregiverSummary();
+  setMsg('Care schedule updated.');
+}
+async function caregiverLogDose(payload){
+  await api('/caregiver/doses','POST',{...payload,owner_email:caregiverOwnerEmail});
+  await loadCaregiverSummary();
+  setMsg('Dose activity recorded.');
+}
 const nav=[['Dashboard',LayoutDashboard],['Medications',Pill],['Activity',Activity],['Health records',ClipboardList],['Caregiver sharing',Users],['Caregiver dashboard',Users]];
 if(!token)return <Auth onSubmit={submitAuth} busy={busy} msg={msg}/>;
 return <div className="app"><style>{`
@@ -200,7 +215,7 @@ body{color:var(--ec-ink)!important}
 {page==='Activity'&&<Activities data={data} act={act}/>}
 {page==='Health records'&&<Health data={data} act={act}/>}
 {page==='Caregiver sharing'&&<Sharing data={data} act={act}/>}
-{page==='Caregiver dashboard'&&<CaregiverDashboard ownerEmail={caregiverOwnerEmail} setOwnerEmail={setCaregiverOwnerEmail} summary={caregiverSummary} loading={caregiverLoading} onLookup={loadCaregiverSummary} onClear={()=>setCaregiverSummary(null)}/>}
+{page==='Caregiver dashboard'&&<CaregiverDashboard ownerEmail={caregiverOwnerEmail} setOwnerEmail={setCaregiverOwnerEmail} summary={caregiverSummary} loading={caregiverLoading} onLookup={loadCaregiverSummary} onClear={()=>setCaregiverSummary(null)} onCreateMedication={caregiverCreateMedication} onUpdateMedication={caregiverUpdateMedication} onLogDose={caregiverLogDose}/>}
 <footer><span>Made with care for everyday independence.</span><span>Demo MVP · Not a medical device</span></footer></main></div>}
 function Auth({onSubmit,busy,msg}){
   const[mode,setMode]=useState('register');
@@ -512,54 +527,83 @@ function Health({ data, act }) {
   );
 }
 
-function Sharing({data,act}){return <><SectionHead eyebrow="YOUR PRIVACY CONTROLS" title="Caregiver sharing" desc="Choose whether to share selected summaries with someone you trust."/><div className="notice"><ShieldCheck size={19}/> Sharing is optional. Only the scopes you select are included. You can revoke access at any time.</div><form className="formpanel" onSubmit={e=>{e.preventDefault();const form=e.currentTarget;let f=new FormData(form);act(()=>apiPost('/permissions',{caregiver_email:f.get('email'),scopes:f.getAll('scope')}));e.currentTarget.reset()}}><h3>Invite a caregiver</h3><Field label="Caregiver account email"><input name="email" type="email" required placeholder="caregiver@example.com"/></Field><p className="muted">Select what this person can view:</p><div className="checks"><label><input type="checkbox" name="scope" value="medications"/> Medication schedule and dose log</label><label><input type="checkbox" name="scope" value="activity"/> Activity entries</label><label><input type="checkbox" name="scope" value="health"/> Health measurements</label></div><button className="primary">Grant selected access</button></form><div className="panel mt"><h3>Sharing permissions</h3>{data.permissions.length?data.permissions.map(p=><div className="listrow permission" key={p.id}><div><b>{p.caregiver_email}</b><small>{p.scopes.join(' · ')}</small></div><span className={'status '+(p.active?'taken':'missed')}>{p.active?'Active':'Revoked'}</span>{p.active&&<button className="softbtn danger" onClick={()=>act(()=>apiDelete('/permissions/'+p.id))}>Revoke access</button>}</div>):<p className="muted">No caregiver permissions have been created.</p>}</div></>}
+function Sharing({data,act}){return <><SectionHead eyebrow="YOUR PRIVACY CONTROLS" title="Caregiver sharing" desc="Choose whether to share selected summaries with someone you trust."/><div className="notice"><ShieldCheck size={19}/> Sharing is optional. Only the scopes you select are included. You can revoke access at any time.</div><form className="formpanel" onSubmit={e=>{e.preventDefault();const form=e.currentTarget;let f=new FormData(form);act(()=>apiPost('/permissions',{caregiver_email:f.get('email'),scopes:f.getAll('scope')}));e.currentTarget.reset()}}><h3>Invite a caregiver</h3><Field label="Caregiver account email"><input name="email" type="email" required placeholder="caregiver@example.com"/></Field><p className="muted">Select what this person can view:</p><div className="checks"><label><input type="checkbox" name="scope" value="medications"/> View medication schedule and dose log</label><label><input type="checkbox" name="scope" value="manage_medications"/> Manage medication reminders and dose logs (includes view access)</label><label><input type="checkbox" name="scope" value="activity"/> Activity entries</label><label><input type="checkbox" name="scope" value="health"/> Health measurements</label></div><button className="primary">Grant selected access</button></form><div className="panel mt"><h3>Sharing permissions</h3>{data.permissions.length?data.permissions.map(p=><div className="listrow permission" key={p.id}><div><b>{p.caregiver_email}</b><small>{p.scopes.join(' · ')}</small></div><span className={'status '+(p.active?'taken':'missed')}>{p.active?'Active':'Revoked'}</span>{p.active&&<button className="softbtn danger" onClick={()=>act(()=>apiDelete('/permissions/'+p.id))}>Revoke access</button>}</div>):<p className="muted">No caregiver permissions have been created.</p>}</div></>}
 
 
-function CaregiverDashboard({ownerEmail,setOwnerEmail,summary,loading,onLookup,onClear}){
+function CaregiverDashboard({ownerEmail,setOwnerEmail,summary,loading,onLookup,onClear,onCreateMedication,onUpdateMedication,onLogDose}){
   const scopes=summary?.shared_scopes || [];
+  const canManage=Boolean(summary?.can_manage_medications);
+  const [showAdd,setShowAdd]=useState(false);
+  const [saving,setSaving]=useState(false);
+  const [formError,setFormError]=useState('');
+  async function submitNewMedication(e){
+    e.preventDefault();
+    const f=new FormData(e.currentTarget);
+    setSaving(true);setFormError('');
+    try{
+      await onCreateMedication({name:f.get('name'),dosage:f.get('dosage'),schedule_time:f.get('schedule_time'),instructions:f.get('instructions')});
+      e.currentTarget.reset();setShowAdd(false);
+    }catch(err){setFormError(err.message||'Could not add the reminder.');}
+    finally{setSaving(false);}
+  }
+  async function update(id,payload){
+    setSaving(true);setFormError('');
+    try{await onUpdateMedication(id,payload);}
+    catch(err){setFormError(err.message||'Could not update the schedule.');}
+    finally{setSaving(false);}
+  }
+  async function logDose(medication_id,status){
+    setSaving(true);setFormError('');
+    try{await onLogDose({medication_id,status});}
+    catch(err){setFormError(err.message||'Could not record the dose.');}
+    finally{setSaving(false);}
+  }
   return <>
-    <SectionHead
-      eyebrow="APPROVED CAREGIVER ACCESS"
-      title="Caregiver dashboard"
-      desc="Enter the email address of the ElderCare account that has shared access with you. You will only see the categories they approved."
-    />
+    <SectionHead eyebrow="APPROVED CAREGIVER ACCESS" title="Caregiver dashboard" desc="View shared information and, when authorised, help manage everyday medication reminders."/>
     <form className="formpanel" onSubmit={onLookup}>
       <h3>View a person’s shared summary</h3>
-      <Field label="ElderCare account email">
-        <input type="email" value={ownerEmail} onChange={e=>setOwnerEmail(e.target.value)} placeholder="elderly.person@example.com" required />
-      </Field>
-      <button className="primary" type="submit" disabled={loading}>
-        {loading ? 'Checking access…' : 'Check access and view summary'}
-      </button>
+      <Field label="ElderCare account email"><input type="email" value={ownerEmail} onChange={e=>setOwnerEmail(e.target.value)} placeholder="elderly.person@example.com" required /></Field>
+      <button className="primary" type="submit" disabled={loading}>{loading ? 'Checking access…' : 'Check access and view summary'}</button>
       {summary && <button className="softbtn" type="button" onClick={onClear}>Clear summary</button>}
     </form>
-
     {!summary && <div className="notice mt"><ShieldCheck size={18}/> Access is checked by ElderCare. If permission has not been granted, has been revoked, or the email is incorrect, the information will not be shown.</div>}
-
     {summary && <>
-      <div className="panel mt">
-        <h3>Shared by {summary.owner?.name || 'ElderCare user'}</h3>
-        <p className="muted">{summary.owner?.email}</p>
-        <p className="muted">Approved categories: {scopes.length ? scopes.join(' · ') : 'None'}</p>
-      </div>
-
+      <div className="panel mt"><h3>Shared by {summary.owner?.name || 'ElderCare user'}</h3><p className="muted">{summary.owner?.email}</p><p className="muted">Approved categories: {scopes.map(s=>s==='manage_medications'?'medication management':s).join(' · ')}</p></div>
       {scopes.includes('medications') && <div className="panel mt">
-        <h3>Medication schedule</h3>
-        {summary.medications?.length ? summary.medications.map((m,i)=><div className="listrow" key={i}><b>{m.name}</b><small>{m.dosage}</small><span className="status taken">{m.schedule_time}</span></div>) : <p className="muted">No active medications have been shared.</p>}
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+          <div><h3>Medication schedule</h3><p className="muted">{canManage?'You can manage reminders for this person. Prescribed dosage is read-only.':'View-only medication access.'}</p></div>
+          {canManage&&<button className="primary" type="button" onClick={()=>setShowAdd(v=>!v)}><Plus size={16}/> Add reminder</button>}
+        </div>
+        {showAdd&&canManage&&<form className="formpanel" onSubmit={submitNewMedication}>
+          <h3>Add a prescribed medicine reminder</h3>
+          <p className="muted">Enter the medicine and dosage exactly as written on the current prescription. This records the prescription information and sets a reminder; it does not prescribe or change treatment.</p>
+          <div className="formgrid">
+            <Field label="Medicine name"><input name="name" required maxLength="120" placeholder="Medicine name"/></Field>
+            <Field label="Prescribed dosage (record as written)"><input name="dosage" required maxLength="80" placeholder="e.g. 1 tablet"/></Field>
+            <Field label="Reminder time"><input name="schedule_time" type="time" required/></Field>
+            <Field label="Instructions"><input name="instructions" maxLength="250" placeholder="e.g. After food, as prescribed"/></Field>
+          </div>
+          <button className="primary" disabled={saving}>{saving?'Saving…':'Save reminder'}</button>
+          {formError&&<p className="error">{formError}</p>}
+        </form>}
+        {summary.medications?.length ? summary.medications.map((m,i)=><div className="listrow" key={m.id||i} style={{alignItems:'center',flexWrap:'wrap',gap:10}}>
+          <div style={{minWidth:140,flex:'1 1 160px'}}><b>{m.name}</b><small>{m.dosage} · {m.instructions||'As prescribed'}</small></div>
+          <span className={'status '+(m.active?'taken':'missed')}>{m.active?'Active':'Paused'}</span><span className="status taken">{m.schedule_time}</span>
+          {canManage&&<div style={{display:'flex',gap:7,flexWrap:'wrap'}}>
+            <button className="softbtn" type="button" disabled={saving||!m.active} onClick={()=>{const next=window.prompt('Enter the new reminder time (24-hour HH:MM):',m.schedule_time);if(next!==null&&/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(next))update(m.id,{schedule_time:next});else if(next!==null)window.alert('Please enter a valid time, for example 08:30.')}}>Change time</button>
+            <button className="softbtn" type="button" disabled={saving} onClick={()=>update(m.id,{active:!m.active})}>{m.active?'Pause reminder':'Resume reminder'}</button>
+            <button className="softbtn" type="button" disabled={saving||!m.active} onClick={()=>logDose(m.id,'taken')}>Mark taken</button>
+            <button className="softbtn" type="button" disabled={saving||!m.active} onClick={()=>logDose(m.id,'missed')}>Mark missed</button>
+          </div>}
+        </div>):<p className="muted">No medication reminders have been shared.</p>}
+        {formError&&<p className="error">{formError}</p>}
         <h3 className="mt">Recent dose history</h3>
-        {summary.recent_doses?.length ? summary.recent_doses.map((d,i)=><div className="listrow" key={i}><b>{d.medication}</b><small>{d.scheduled_for}</small><span className={'status '+(d.status==='taken'?'taken':'missed')}>{d.status}</span></div>) : <p className="muted">No dose history has been shared.</p>}
+        {summary.recent_doses?.length ? summary.recent_doses.map((d,i)=><div className="listrow" key={d.id||i}><b>{d.medication}</b><small>{d.scheduled_for}</small><span className={'status '+(d.status==='taken'?'taken':'missed')}>{d.status}</span></div>):<p className="muted">No dose history has been shared.</p>}
+        {canManage&&summary.care_actions?.length>0&&<><h3 className="mt">Caregiver activity log</h3>{summary.care_actions.map((a,i)=><div className="listrow" key={i}><b>{a.action.replace(/_/g,' ')}</b><small>{a.details} · {a.caregiver}</small><span className="muted">{a.created_at}</span></div>)}</>}
+        {canManage&&<p className="notice mt"><ShieldCheck size={17}/> Changes are recorded. Caregivers can manage reminder times and routine logs, but cannot change a prescribed dosage. Confirm treatment changes with the prescribing healthcare professional.</p>}
       </div>}
-
-      {scopes.includes('activity') && <div className="panel mt">
-        <h3>Activity records</h3>
-        {summary.activities?.length ? summary.activities.map((a,i)=><div className="listrow" key={i}><b>{a.activity}</b><small>{a.activity_date}</small><span className="status taken">{a.minutes} min</span></div>) : <p className="muted">No activity entries have been shared.</p>}
-      </div>}
-
-      {scopes.includes('health') && <div className="panel mt">
-        <h3>Health measurements</h3>
-        {summary.measurements?.length ? summary.measurements.map((m,i)=><div className="listrow" key={i}><b>{String(m.kind || '').replace('_',' ')}</b><strong>{m.value} {m.unit}</strong><small>{m.recorded_at}</small></div>) : <p className="muted">No health measurements have been shared.</p>}
-        <p className="notice mt"><ShieldCheck size={17}/> These are user-recorded values, not clinical interpretation. Discuss readings with a qualified healthcare professional.</p>
-      </div>}
+      {scopes.includes('activity') && <div className="panel mt"><h3>Activity records</h3>{summary.activities?.length ? summary.activities.map((a,i)=><div className="listrow" key={i}><b>{a.activity}</b><small>{a.activity_date}</small><span className="status taken">{a.minutes} min</span></div>):<p className="muted">No activity entries have been shared.</p>}</div>}
+      {scopes.includes('health') && <div className="panel mt"><h3>Health measurements</h3>{summary.measurements?.length ? summary.measurements.map((m,i)=><div className="listrow" key={i}><b>{String(m.kind || '').replace('_',' ')}</b><strong>{m.value} {m.unit}</strong><small>{m.recorded_at}</small></div>):<p className="muted">No health measurements have been shared.</p>}<p className="notice mt"><ShieldCheck size={17}/> These are user-recorded values, not clinical interpretation. Discuss readings with a qualified healthcare professional.</p></div>}
       <p className="notice mt"><ShieldCheck size={17}/> Access depends on the account owner’s active permission. If access is revoked, a new check will be denied.</p>
     </>}
   </>;
