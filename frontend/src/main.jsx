@@ -1,4 +1,4 @@
-import React,{useEffect,useState} from 'react';import{createRoot}from'react-dom/client';import{Heart,LayoutDashboard,Pill,Activity,ClipboardList,Users,LogOut,Plus,CheckCircle2,Clock,ShieldCheck,Menu, X,Trash2,Leaf,ArrowUpRight}from'lucide-react';import'./style.css';
+import React,{useEffect,useState} from 'react';import{createRoot}from'react-dom/client';import{Heart,LayoutDashboard,Pill,Activity,ClipboardList,Users,LogOut,Plus,CheckCircle2,Clock,ShieldCheck,Menu, X,Trash2,Leaf,ArrowUpRight,Siren}from'lucide-react';import'./style.css';
 const API=import.meta.env.VITE_API_URL || 'http://127.0.0.1:5000/api';
 function getTokenExpiry(token) {
   try {
@@ -160,7 +160,17 @@ async function caregiverLogDose(payload){
   await loadCaregiverSummary();
   setMsg('Dose activity recorded.');
 }
-const nav=[['Dashboard',LayoutDashboard],['Medications',Pill],['Activity',Activity],['Health records',ClipboardList],['Caregiver sharing',Users],['Caregiver dashboard',Users]];
+async function triggerEmergencySOS(){
+  const confirmed=window.confirm('Send an Emergency SOS email to every active caregiver linked to your account? This does not call emergency services.');
+  if(!confirmed) return;
+  setBusy(true);setMsg('Sending SOS alert…');
+  try{
+    const result=await api('/emergency/sos','POST',{});
+    setMsg(`${result.message} Emails sent: ${result.emails_sent}. ${result.failed ? `Failed: ${result.failed}.` : ''}`);
+  }catch(error){setMsg(error.message||'Could not send the SOS alert.');}
+  finally{setBusy(false);}
+}
+const nav=[['Dashboard',LayoutDashboard],['Medications',Pill],['Activity',Activity],['Health records',ClipboardList],['Caregiver sharing',Users],['Caregiver dashboard',Users],['Emergency SOS',Siren]];
 if(!token)return <Auth onSubmit={submitAuth} busy={busy} msg={msg}/>;
 return <div className="app"><style>{`
 :root{
@@ -280,7 +290,28 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid 
 {page==='Health records'&&<Health data={data} act={act}/>}
 {page==='Caregiver sharing'&&<Sharing data={data} act={act}/>}
 {page==='Caregiver dashboard'&&<CaregiverDashboard ownerEmail={caregiverOwnerEmail} setOwnerEmail={setCaregiverOwnerEmail} summary={caregiverSummary} loading={caregiverLoading} onLookup={loadCaregiverSummary} onClear={()=>setCaregiverSummary(null)} onCreateMedication={caregiverCreateMedication} onUpdateMedication={caregiverUpdateMedication} onLogDose={caregiverLogDose}/>}
+{page==='Emergency SOS'&&<EmergencySOS onSend={triggerEmergencySOS} busy={busy} permissions={data.permissions}/> }
 <footer><span>Made with care for everyday independence.</span><span>Demo MVP · Not a medical device</span></footer></main></div>}
+
+function EmergencySOS({onSend,busy,permissions}){
+  const active=(permissions||[]).filter(p=>p.active);
+  return <div style={{display:'grid',gap:18,maxWidth:850,margin:'0 auto'}}>
+    <SectionHead eyebrow="QUICK HELP ALERT" title="Emergency SOS" desc="Send an urgent email to the caregivers linked to your ElderCare account."/>
+    <section className="panel" style={{padding:'clamp(22px,4vw,34px)',borderRadius:22,border:'1px solid #e4c7bd',background:'linear-gradient(145deg,#fff8f4,#f8eee8)'}}>
+      <div style={{display:'flex',alignItems:'center',gap:13,marginBottom:14}}>
+        <span style={{width:48,height:48,display:'grid',placeItems:'center',borderRadius:15,background:'#f4ddd4',color:'#a34f3d'}}><Siren size={25}/></span>
+        <div><h3 style={{margin:'0 0 4px',color:'#793f34'}}>Need help? Alert your caregivers.</h3><p style={{margin:0,color:'#8b6a60',fontSize:13}}>This sends an email asking them to contact you immediately.</p></div>
+      </div>
+      <div style={{padding:15,borderRadius:13,background:'#fff',border:'1px solid #f0ddd5',margin:'18px 0'}}>
+        <b style={{display:'block',color:'#684a42',fontSize:13,marginBottom:6}}>Active caregiver contacts: {active.length}</b>
+        {active.length ? <p style={{margin:0,color:'#826e66',fontSize:13,lineHeight:1.6}}>Your SOS email will be sent to the caregiver email addresses you've authorised in Caregiver sharing.</p> : <p style={{margin:0,color:'#9a5548',fontSize:13,lineHeight:1.6}}>No active caregiver permissions found. Add a caregiver in Caregiver sharing before using this feature.</p>}
+      </div>
+      <button type="button" onClick={onSend} disabled={busy||!active.length} style={{width:'100%',minHeight:54,border:0,borderRadius:14,background:active.length?'linear-gradient(120deg,#a84c3e,#c96b54)':'#c9b9b3',color:'#fff',fontSize:15,fontWeight:800,cursor:active.length?'pointer':'not-allowed',boxShadow:'0 8px 20px rgba(153,72,56,.18)'}}>{busy?'Sending alert…':'Send Emergency SOS Alert'}</button>
+    </section>
+    <div className="notice" style={{borderColor:'#e8c9bd',background:'#fff7f2',color:'#81584d',lineHeight:1.7}}><ShieldCheck size={18}/> <span><b>Important safety information:</b> SOS sends an email to your linked caregivers only. It does not call an ambulance, police, or any emergency service. If you are in immediate danger or need urgent medical help, contact your local emergency number directly.</span></div>
+  </div>;
+}
+
 function Auth({onSubmit,busy,msg}){
   const[mode,setMode]=useState('register');
   const isRegister=mode==='register';
