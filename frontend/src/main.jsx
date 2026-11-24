@@ -174,7 +174,7 @@ function Auth({onSubmit,busy,msg}){
   const shellStyle={width:'min(1180px,100%)',display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(min(100%,390px),1fr))',background:'#fff',borderRadius:30,overflow:'hidden',boxShadow:'0 28px 90px rgba(38,75,57,.13)',border:'1px solid #e4eee6'};
   return <div style={pageStyle}>
     <div style={shellStyle}>
-      <section style={{padding:'clamp(28px,5vw,62px)',background:'linear-gradient(145deg,#eaf4ec,#f5f7ed 62%,#e5f1e9)',display:'flex',flexDirection:'column',justifyContent:'space-between',gap:34,minHeight:600}}>
+      <section style={{padding:'clamp(28px,5vw,62px)',backgroundImage:'linear-gradient(90deg,rgba(235,245,237,.96) 0%,rgba(240,246,238,.88) 54%,rgba(239,245,236,.46) 100%),url(/eldercare-care-hands.png)',backgroundSize:'cover',backgroundPosition:'center',backgroundRepeat:'no-repeat',display:'flex',flexDirection:'column',justifyContent:'space-between',gap:34,minHeight:600}}>
         <div>
           <div style={{display:'flex',alignItems:'center',gap:12,color:'#214c3c',fontSize:25,fontWeight:800,letterSpacing:'-.7px'}}>
             <span style={{width:48,height:48,borderRadius:16,display:'grid',placeItems:'center',background:'#fff',boxShadow:'0 6px 20px #234b3514'}}><Heart size={25}/></span>
@@ -231,7 +231,7 @@ function Dashboard({data,setPage,user}){
     {icon:ClipboardList,label:'Health records',value:data.measurements.length,detail:'Measurements saved',page:'Health records'}
   ];
   return <div style={{display:'grid',gap:22}}>
-    <section style={{position:'relative',overflow:'hidden',borderRadius:26,padding:'clamp(25px,4vw,42px)',background:'linear-gradient(115deg,#214d3b 0%,#376b50 60%,#6f9876 100%)',color:'#fff',boxShadow:'0 16px 38px #244f3a20'}}>
+    <section style={{position:'relative',overflow:'hidden',borderRadius:26,padding:'clamp(25px,4vw,42px)',backgroundImage:'linear-gradient(100deg,rgba(29,70,51,.97) 0%,rgba(44,91,64,.90) 58%,rgba(47,91,65,.58) 100%),url(/eldercare-family-walk.png)',backgroundSize:'cover',backgroundPosition:'center 42%',color:'#fff',boxShadow:'0 16px 38px #244f3a20'}}>
       <div style={{position:'absolute',right:-35,top:-80,width:300,height:300,borderRadius:'50%',border:'1px solid #ffffff25'}}></div>
       <div style={{position:'absolute',right:45,bottom:-100,width:220,height:220,borderRadius:'50%',background:'#ffffff0c'}}></div>
       <div style={{position:'relative',zIndex:1,maxWidth:650}}>
@@ -268,6 +268,24 @@ function Dashboard({data,setPage,user}){
         <button className="textbtn" onClick={()=>setPage('Activity')} style={{marginTop:12}}>Record an activity <ArrowUpRight size={15}/></button>
       </div>
     </section>
+
+    <section style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(min(100%,260px),1fr))',gap:16,alignItems:'stretch'}}>
+      <div style={{borderRadius:20,overflow:'hidden',background:'#fff',border:'1px solid #e4ece5',boxShadow:'0 7px 22px #234b3508'}}>
+        <img src="/eldercare-family-walk.png" alt="An older adult enjoying a peaceful walk with a loved one" style={{width:'100%',height:180,objectFit:'cover',display:'block'}}/>
+        <div style={{padding:'17px 19px 20px'}}>
+          <b style={{display:'block',color:'#315640',fontSize:16}}>Make room for little moments.</b>
+          <p style={{margin:'7px 0 0',fontSize:13,lineHeight:1.65,color:'#7b8b80'}}>A short walk, a friendly check-in, a little fresh air — everyday wellbeing is built one moment at a time.</p>
+        </div>
+      </div>
+      <div style={{borderRadius:20,overflow:'hidden',background:'#fff',border:'1px solid #e4ece5',boxShadow:'0 7px 22px #234b3508'}}>
+        <img src="/eldercare-wellness-illustration.png" alt="Illustration representing support and wellbeing for older adults" style={{width:'100%',height:180,objectFit:'cover',display:'block',background:'#eaf1ff'}}/>
+        <div style={{padding:'17px 19px 20px'}}>
+          <b style={{display:'block',color:'#315640',fontSize:16}}>Care works better together.</b>
+          <p style={{margin:'7px 0 0',fontSize:13,lineHeight:1.65,color:'#7b8b80'}}>Keep trusted family and caregivers connected through the updates you choose to share.</p>
+        </div>
+      </div>
+    </section>
+
     <div style={{padding:'16px 19px',borderRadius:16,background:'#edf5ef',color:'#64806d',fontSize:12,lineHeight:1.7,display:'flex',gap:10,alignItems:'center'}}><ShieldCheck size={19}/> Your information is yours. Share selected updates with trusted caregivers whenever you choose. ElderCare supports everyday organisation and does not replace professional medical care.</div>
   </div>;
 }
