@@ -381,57 +381,7 @@ def run_reminders():
         "emails_sent": sent,
         "failed": failed
     })
-    for med in medications:
-        try:
-            scheduled_time = datetime.strptime(
-                med.schedule_time, "%H:%M"
-            ).time()
-
-            for day in (now.date(), (now - timedelta(days=1)).date()):
-                scheduled_dt = datetime.combine(day, scheduled_time)
-
-                if not (window_start < scheduled_dt <= now):
-                    continue
-
-                scheduled_for = scheduled_dt.strftime("%Y-%m-%d %H:%M")
-
-                already_sent = ReminderLog.query.filter_by(
-                    medication_id=med.id,
-                    scheduled_for=scheduled_for
-                ).first()
-
-                if already_sent:
-                    continue
-
-                user = db.session.get(User, med.user_id)
-                if not user:
-                    continue
-
-                send_brevo_email(
-                    user.email,
-                    "ElderCare medication reminder",
-                    f"<h2>Medication reminder</h2>"
-                    f"<p>It is time to take <b>{med.name}</b>.</p>"
-                    f"<p>Dosage: {med.dosage}</p>"
-                    f"<p>Instructions: {med.instructions or 'Follow your prescription.'}</p>"
-                )
-
-                db.session.add(ReminderLog(
-                    medication_id=med.id,
-                    scheduled_for=scheduled_for
-                ))
-                db.session.commit()
-                sent += 1
-
-        except Exception:
-            db.session.rollback()
-            failed += 1
-
-    return jsonify({
-        "message": "Reminder check completed.",
-        "emails_sent": sent,
-        "failed": failed
-    })
+   
 with app.app_context():
     db.create_all()
 
