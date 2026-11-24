@@ -167,9 +167,111 @@ return <div className="app"><aside className={mobile?'side open':'side'}><div cl
 {page==='Caregiver sharing'&&<Sharing data={data} act={act}/>}
 {page==='Caregiver dashboard'&&<CaregiverDashboard ownerEmail={caregiverOwnerEmail} setOwnerEmail={setCaregiverOwnerEmail} summary={caregiverSummary} loading={caregiverLoading} onLookup={loadCaregiverSummary} onClear={()=>setCaregiverSummary(null)}/>}
 <footer><span>Made with care for everyday independence.</span><span>Demo MVP · Not a medical device</span></footer></main></div>}
-function Auth({onSubmit,busy,msg}){const[mode,setMode]=useState('register');return <div className="authwrap"><div className="authcard"><div className="brand authbrand"><span className="brandicon"><Heart/></span><span>ElderCare<small>WELLNESS COMPANION</small></span></div><div className="authart"><div className="sun"></div><div className="authquote">A little care,<br/><i>every day.</i><small>Simple routines. More confidence. Greater peace of mind.</small></div></div><form onSubmit={onSubmit}><h2>{mode==='register'?'Create your account':'Welcome back'}</h2><p>Manage your daily wellness in one calm, simple place.</p><input type="hidden" name="mode" value={mode}/>{mode==='register'&&<><label>Your name</label><input name="name" placeholder="e.g. Asha Sharma" required/></>}<label>Email address</label><input name="email" type="email" placeholder="you@example.com" required/><label>Password</label><input name="password" type="password" minLength="8" placeholder="At least 8 characters" required/>{msg&&<div className="error">{msg}</div>}<button className="primary full" disabled={busy}>{busy?'Please wait…':mode==='register'?'Create account':'Sign in'}</button><div className="switch">{mode==='register'?'Already have an account?':'New to ElderCare?'} <button type="button" onClick={()=>setMode(mode==='register'?'login':'register')}>{mode==='register'?'Sign in':'Create account'}</button></div></form></div><div className="authfoot">Private by design · Caregiver access is always your choice</div></div>}
+function Auth({onSubmit,busy,msg}){
+  const[mode,setMode]=useState('register');
+  const isRegister=mode==='register';
+  const pageStyle={minHeight:'100vh',background:'linear-gradient(135deg,#f3f8f3 0%,#f8f6ef 52%,#edf5f1 100%)',padding:'clamp(18px,4vw,54px)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:'inherit'};
+  const shellStyle={width:'min(1180px,100%)',display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(min(100%,390px),1fr))',background:'#fff',borderRadius:30,overflow:'hidden',boxShadow:'0 28px 90px rgba(38,75,57,.13)',border:'1px solid #e4eee6'};
+  return <div style={pageStyle}>
+    <div style={shellStyle}>
+      <section style={{padding:'clamp(28px,5vw,62px)',background:'linear-gradient(145deg,#eaf4ec,#f5f7ed 62%,#e5f1e9)',display:'flex',flexDirection:'column',justifyContent:'space-between',gap:34,minHeight:600}}>
+        <div>
+          <div style={{display:'flex',alignItems:'center',gap:12,color:'#214c3c',fontSize:25,fontWeight:800,letterSpacing:'-.7px'}}>
+            <span style={{width:48,height:48,borderRadius:16,display:'grid',placeItems:'center',background:'#fff',boxShadow:'0 6px 20px #234b3514'}}><Heart size={25}/></span>
+            <span>ElderCare<small style={{display:'block',fontSize:9,letterSpacing:2.4,fontWeight:700,color:'#789184',marginTop:3}}>WELLNESS COMPANION</small></span>
+          </div>
+          <div style={{marginTop:65,maxWidth:500}}>
+            <div style={{display:'inline-flex',alignItems:'center',gap:8,padding:'8px 13px',borderRadius:99,background:'#ffffffb8',color:'#47745c',fontSize:11,fontWeight:800,letterSpacing:1.2}}><Leaf size={15}/> CARE THAT FEELS CLOSER</div>
+            <h1 style={{fontSize:'clamp(38px,5vw,58px)',lineHeight:1.06,letterSpacing:'-2px',color:'#173c30',margin:'22px 0 16px'}}>A little more care.<br/><span style={{color:'#6b9b78'}}>A lot more peace.</span></h1>
+            <p style={{fontSize:17,lineHeight:1.75,color:'#61796b',maxWidth:440,margin:0}}>Everyday wellbeing, thoughtful reminders and family connection — together in one calm, simple space.</p>
+          </div>
+        </div>
+        <div style={{display:'grid',gap:12}}>
+          {[
+            ['01','Gentle daily routines','Keep medicines, movement and health notes organised.'],
+            ['02','Care that stays connected','Share selected updates with people you trust.'],
+            ['03','Your choices come first','You decide what to record and what to share.']
+          ].map(([n,t,d])=><div key={n} style={{display:'flex',gap:15,alignItems:'flex-start',padding:'15px 17px',borderRadius:17,background:'#ffffffb8',border:'1px solid #ffffff'}}>
+            <b style={{fontSize:12,color:'#82a48b',paddingTop:3}}>{n}</b><div><b style={{display:'block',color:'#294d3c',fontSize:14}}>{t}</b><span style={{display:'block',color:'#718477',fontSize:12,lineHeight:1.5,marginTop:4}}>{d}</span></div>
+          </div>)}
+        </div>
+        <div style={{color:'#819488',fontSize:11}}>A supportive companion for everyday care · Not a medical device</div>
+      </section>
+      <section style={{padding:'clamp(28px,5vw,62px)',display:'flex',flexDirection:'column',justifyContent:'center'}}>
+        <div style={{maxWidth:430,width:'100%',margin:'0 auto'}}>
+          <div style={{fontSize:11,fontWeight:800,letterSpacing:2,color:'#7b9b85'}}>WELCOME TO ELDERCARE</div>
+          <h2 style={{fontSize:34,letterSpacing:'-1px',color:'#1d3e31',margin:'13px 0 8px'}}>{isRegister?'Let’s make care simpler.':'It’s good to see you again.'}</h2>
+          <p style={{color:'#829188',lineHeight:1.65,margin:'0 0 28px'}}>{isRegister?'Create your personal space and take the first step toward a more organised routine.':'Sign in to pick up right where you left off.'}</p>
+          <form onSubmit={onSubmit} style={{display:'grid',gap:12}}>
+            <input type="hidden" name="mode" value={mode}/>
+            {isRegister&&<><label style={{fontSize:13,fontWeight:700,color:'#476453'}}>Your name</label><input name="name" placeholder="e.g. Asha Sharma" required style={authInputStyle}/></>}
+            <label style={{fontSize:13,fontWeight:700,color:'#476453'}}>Email address</label>
+            <input name="email" type="email" placeholder="you@example.com" required style={authInputStyle}/>
+            <label style={{fontSize:13,fontWeight:700,color:'#476453'}}>Password</label>
+            <input name="password" type="password" minLength="8" placeholder="At least 8 characters" required style={authInputStyle}/>
+            {msg&&<div className="error">{msg}</div>}
+            <button className="primary full" disabled={busy} style={{marginTop:10,minHeight:52,borderRadius:14,fontSize:15,fontWeight:800}}>{busy?'Please wait…':isRegister?'Create my account':'Sign in to ElderCare'}</button>
+          </form>
+          <div style={{textAlign:'center',color:'#819087',fontSize:13,marginTop:22}}>{isRegister?'Already have an account?':'New to ElderCare?'} <button type="button" onClick={()=>setMode(isRegister?'login':'register')} style={{border:0,background:'none',color:'#397858',fontWeight:800,cursor:'pointer',fontSize:13}}>{isRegister?'Sign in':'Create an account'}</button></div>
+          <div style={{marginTop:30,padding:'13px 15px',borderRadius:13,background:'#f3f8f4',color:'#718779',fontSize:11,lineHeight:1.6,display:'flex',gap:9,alignItems:'center'}}><ShieldCheck size={18} color="#5e9270"/> Your caregiver sharing is optional and stays under your control.</div>
+        </div>
+      </section>
+    </div>
+  </div>;
+}
+const authInputStyle={width:'100%',boxSizing:'border-box',padding:'15px 16px',borderRadius:13,border:'1px solid #dce8df',background:'#fbfdfb',fontSize:14,color:'#294638',outlineColor:'#78a987'};
+
 function SectionHead({eyebrow,title,desc,action}){return <div className="sectionhead"><div><div className="eyebrow">{eyebrow}</div><h2>{title}</h2><p>{desc}</p></div>{action}</div>}
-function Dashboard({data,setPage,user}){const taken=data.doses.filter(x=>x.status==='taken').length;return <><div className="welcome"><div><span className="pilltag"><Leaf size={14}/> A HEALTHIER ROUTINE STARTS HERE</span><h2>One step at a time.</h2><p>Keep track of the little things that help you feel your best.</p></div><div className="welcomeicon">🌿</div></div><div className="stats"><Stat icon={Pill} label="Your medicines" value={data.medications.length} sub="Active schedules"/><Stat icon={CheckCircle2} label="Doses recorded" value={taken} sub="Marked as taken"/><Stat icon={Activity} label="Activity entries" value={data.activities.length} sub="Wellness moments"/><Stat icon={ClipboardList} label="Health records" value={data.measurements.length} sub="Measurements saved"/></div><div className="dashgrid"><div className="panel"><div className="panelhead"><div><h3>Medication schedule</h3><p>Your saved daily routines</p></div><button className="textbtn" onClick={()=>setPage('Medications')}>View all <ArrowUpRight size={15}/></button></div>{data.medications.length?data.medications.slice(0,4).map(m=><div className="medrow" key={m.id}><div className="medicon"><Pill/></div><div className="medinfo"><b>{m.name}</b><small>{m.dosage} · {m.instructions||'As prescribed'}</small></div><span className="time"><Clock size={14}/>{m.schedule_time}</span></div>):<Empty icon={Pill} title="No medicines added yet" text="Add a prescribed medicine to start organising your routine." button="Add medication" onClick={()=>setPage('Medications')}/>}</div><div className="panel"><div className="panelhead"><div><h3>Wellness at a glance</h3><p>Your recent activity</p></div></div><div className="miniwell"><span className="roundicon mint"><Activity/></span><div><b>{data.activities.reduce((s,a)=>s+a.minutes,0)} min</b><small>Activity minutes recorded</small></div></div><div className="miniwell"><span className="roundicon peach"><ClipboardList/></span><div><b>{data.measurements.length} entries</b><small>Health measurements saved</small></div></div><div className="tip"><b>A gentle reminder</b><p>Small, consistent habits can make everyday routines easier. Follow the care plan agreed with your healthcare professional.</p></div></div></div></>}
+function Dashboard({data,setPage,user}){
+  const taken=data.doses.filter(x=>x.status==='taken').length;
+  const cards=[
+    {icon:Pill,label:'Your medicines',value:data.medications.length,detail:'Active schedules',page:'Medications'},
+    {icon:CheckCircle2,label:'Doses recorded',value:taken,detail:'Marked as taken',page:'Medications'},
+    {icon:Activity,label:'Activity entries',value:data.activities.length,detail:'Wellness moments',page:'Activity'},
+    {icon:ClipboardList,label:'Health records',value:data.measurements.length,detail:'Measurements saved',page:'Health records'}
+  ];
+  return <div style={{display:'grid',gap:22}}>
+    <section style={{position:'relative',overflow:'hidden',borderRadius:26,padding:'clamp(25px,4vw,42px)',background:'linear-gradient(115deg,#214d3b 0%,#376b50 60%,#6f9876 100%)',color:'#fff',boxShadow:'0 16px 38px #244f3a20'}}>
+      <div style={{position:'absolute',right:-35,top:-80,width:300,height:300,borderRadius:'50%',border:'1px solid #ffffff25'}}></div>
+      <div style={{position:'absolute',right:45,bottom:-100,width:220,height:220,borderRadius:'50%',background:'#ffffff0c'}}></div>
+      <div style={{position:'relative',zIndex:1,maxWidth:650}}>
+        <span style={{display:'inline-flex',alignItems:'center',gap:8,padding:'8px 13px',borderRadius:99,background:'#ffffff20',fontSize:10,fontWeight:800,letterSpacing:1.4}}><Leaf size={14}/> YOUR WELLNESS, YOUR PACE</span>
+        <h2 style={{fontSize:'clamp(30px,4vw,45px)',lineHeight:1.1,letterSpacing:'-1.4px',margin:'22px 0 12px'}}>Every day is a fresh<br/>chance to feel cared for.</h2>
+        <p style={{fontSize:15,lineHeight:1.75,color:'#e2eee5',maxWidth:520,margin:'0 0 23px'}}>Hello {user?.name?.split(' ')[0]||'there'} — keep your daily routines close, celebrate small steps and stay connected with the people who care.</p>
+        <div style={{display:'flex',flexWrap:'wrap',gap:10}}>
+          <button onClick={()=>setPage('Medications')} style={{border:0,borderRadius:12,padding:'12px 17px',background:'#fff',color:'#28543e',fontWeight:800,cursor:'pointer'}}>View medication routine</button>
+          <button onClick={()=>setPage('Caregiver sharing')} style={{border:'1px solid #ffffff70',borderRadius:12,padding:'12px 17px',background:'#ffffff12',color:'#fff',fontWeight:700,cursor:'pointer'}}>Manage caregiver sharing</button>
+        </div>
+      </div>
+      <div style={{position:'absolute',right:'7%',top:'26%',fontSize:90,opacity:.18}} aria-hidden="true">🌿</div>
+    </section>
+    <section style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',gap:14}}>
+      {cards.map(({icon:I,label,value,detail,page:p})=><button key={label} onClick={()=>setPage(p)} style={{textAlign:'left',display:'flex',alignItems:'center',gap:14,padding:'19px 17px',borderRadius:18,border:'1px solid #e4ece5',background:'#fff',boxShadow:'0 5px 18px #234b3508',cursor:'pointer'}}>
+        <span style={{width:45,height:45,flexShrink:0,display:'grid',placeItems:'center',borderRadius:15,background:'#edf5ef',color:'#4f8060'}}><I size={21}/></span>
+        <span><small style={{display:'block',fontSize:12,color:'#829188'}}>{label}</small><b style={{display:'block',fontSize:27,color:'#244b38',lineHeight:1.2,margin:'3px 0'}}>{value}</b><small style={{fontSize:11,color:'#9aa79e'}}>{detail}</small></span>
+      </button>)}
+    </section>
+    <section style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(min(100%,300px),1fr))',gap:18}}>
+      <div className="panel" style={{borderRadius:20,padding:23}}>
+        <div className="panelhead"><div><h3>Your daily care routine</h3><p>Simple steps, organised in one place</p></div></div>
+        {data.medications.length?data.medications.slice(0,4).map(m=><div className="medrow" key={m.id}><div className="medicon"><Pill/></div><div className="medinfo"><b>{m.name}</b><small>{m.dosage} · {m.instructions||'As prescribed'}</small></div><span className="time"><Clock size={14}/>{m.schedule_time}</span></div>):<Empty icon={Pill} title="Start with your medication routine" text="Add prescribed medicines and their schedule to keep your routine organised." button="Add medication" onClick={()=>setPage('Medications')}/>}
+        <button className="textbtn" onClick={()=>setPage('Medications')} style={{marginTop:12}}>Open medication tracker <ArrowUpRight size={15}/></button>
+      </div>
+      <div className="panel" style={{borderRadius:20,padding:23}}>
+        <div className="panelhead"><div><h3>Little moments matter</h3><p>Your wellbeing at a glance</p></div></div>
+        <div className="miniwell"><span className="roundicon mint"><Activity/></span><div><b>{data.activities.reduce((s,a)=>s+a.minutes,0)} min</b><small>Activity minutes recorded</small></div></div>
+        <div className="miniwell"><span className="roundicon peach"><ClipboardList/></span><div><b>{data.measurements.length} entries</b><small>Health measurements saved</small></div></div>
+        <div style={{marginTop:20,padding:18,borderRadius:16,background:'#f0f6f0',border:'1px solid #e4eee5'}}>
+          <b style={{display:'block',color:'#345d43',marginBottom:7}}>A gentle thought for today</b>
+          <p style={{fontSize:13,lineHeight:1.7,color:'#718579',margin:0}}>You don't have to do everything at once. One small step, one kind check-in, one moment at a time — that is care, too.</p>
+        </div>
+        <button className="textbtn" onClick={()=>setPage('Activity')} style={{marginTop:12}}>Record an activity <ArrowUpRight size={15}/></button>
+      </div>
+    </section>
+    <div style={{padding:'16px 19px',borderRadius:16,background:'#edf5ef',color:'#64806d',fontSize:12,lineHeight:1.7,display:'flex',gap:10,alignItems:'center'}}><ShieldCheck size={19}/> Your information is yours. Share selected updates with trusted caregivers whenever you choose. ElderCare supports everyday organisation and does not replace professional medical care.</div>
+  </div>;
+}
+
 function Stat({icon:I,label,value,sub}){return <div className="stat"><span className="staticon"><I/></span><div><small>{label}</small><strong>{value}</strong><span>{sub}</span></div></div>}
 function Empty({icon:I,title,text,button,onClick}){return <div className="empty"><span><I/></span><b>{title}</b><p>{text}</p>{button&&<button className="primary" onClick={onClick}><Plus size={16}/>{button}</button>}</div>}
 function Medications({data,act}){const[show,setShow]=useState(false);return <><SectionHead eyebrow="MEDICATION ROUTINE" title="Your medicines" desc="Keep your prescribed medication schedule organised." action={<button className="primary" onClick={()=>setShow(!show)}><Plus size={17}/> Add medicine</button>}/>{show&&<form className="formpanel" onSubmit={e=>{e.preventDefault();const form=e.currentTarget;let f=new FormData(form);act(async()=>{await apiPost('/medications',{name:f.get('name'),dosage:f.get('dosage'),schedule_time:f.get('time'),instructions:f.get('instructions')});setShow(false)})}}><h3>New medication</h3><div className="formgrid"><Field label="Medicine name"><input name="name" required placeholder="Medicine name"/></Field><Field label="Dosage"><input name="dosage" required placeholder="e.g. 1 tablet"/></Field><Field label="Reminder time"><input name="time" type="time" required/></Field><Field label="Instructions"><input name="instructions" placeholder="e.g. After food"/></Field></div><button className="primary">Save medication</button></form>}<div className="panel">{data.medications.length?data.medications.map(m=><div className="medrow large" key={m.id}><div className="medicon"><Pill/></div><div className="medinfo"><b>{m.name}</b><small>{m.dosage} · {m.instructions||'No additional instructions'}</small></div><span className="time"><Clock size={14}/>{m.schedule_time}</span><button className="iconbtn" title="Delete" onClick={()=>act(()=>apiDelete('/medications/'+m.id))}><Trash2 size={17}/></button><button className="softbtn" onClick={()=>act(()=>apiPost('/doses',{medication_id:m.id,status:'taken'}))}>Log taken</button><button className="softbtn" onClick={()=>act(()=>apiPost('/doses',{medication_id:m.id,status:'skipped'}))}>Log skipped</button></div>):<Empty icon={Pill} title="Your medication list is empty" text="Add medicines exactly as prescribed by your healthcare professional."/>}</div><div className="panel mt"><h3>Recent dose activity</h3>{data.doses.length?data.doses.slice(0,8).map(d=><div className="listrow" key={d.id}><span>{d.medication}</span><small>{d.scheduled_for}</small><span className={'status '+d.status}>{d.status}</span></div>):<p className="muted">Dose entries will appear here when you log them.</p>}</div></>}
