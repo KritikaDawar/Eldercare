@@ -582,7 +582,22 @@ function Health({ data, act }) {
   const [tab,setTab]=useState('documents');
   const [busy,setBusy]=useState(false);
   const [localError,setLocalError]=useState('');
+  const [analysisBusy,setAnalysisBusy]=useState(null);
+  const [analysisById,setAnalysisById]=useState({});
   const documents=data.medicalDocuments||[], history=data.medicalHistory||[], expenses=data.medicalExpenses||[];
+  async function analyzeDocument(id){
+    setAnalysisBusy(id);setLocalError('');
+    try{
+      const result=await apiPost('/medical-documents/'+id+'/analyze',{});
+      setAnalysisById(prev=>({...prev,[id]:result}));
+    }catch(err){setLocalError(err.message||'Could not analyse this document.');}
+    finally{setAnalysisBusy(null);}
+  }
+  async function loadDocumentAnalysis(id){
+    try{const r=await fetch(API+'/medical-documents/'+id+'/analysis',{headers:{Authorization:'Bearer '+tokenGet()}});if(r.ok){const d=await r.json();if(d.status!=='not_analyzed')setAnalysisById(prev=>({...prev,[id]:d}));}}
+    catch{}
+  }
+  useEffect(()=>{documents.forEach(x=>{if(!analysisById[x.id]&&x.analysis_status&&x.analysis_status!=='not_analyzed')loadDocumentAnalysis(x.id);});},[documents]);
   const total=expenses.reduce((sum,x)=>sum+Number(x.amount||0),0);
   const monthKey=new Date().toLocaleDateString('en-CA').slice(0,7);
   const monthTotal=expenses.filter(x=>(x.expense_date||'').startsWith(monthKey)).reduce((sum,x)=>sum+Number(x.amount||0),0);
@@ -612,7 +627,14 @@ function Health({ data, act }) {
       <div className="panel mt"><h3>Saved reports and prescriptions</h3>{documents.length?documents.map(x=><div className="listrow" key={x.id}>
         <div style={{flex:'1 1 180px'}}><b>{x.title}</b><small>{x.category.replace('_',' ')} · {x.document_date} · {x.original_filename}</small>{x.notes&&<small>{x.notes}</small>}</div>
         <button type="button" className="softbtn" onClick={()=>act(()=>apiDownload('/medical-documents/'+x.id+'/download',x.original_filename))}>View / download</button>
+        <button type="button" className="primary" disabled={analysisBusy===x.id} onClick={()=>analyzeDocument(x.id)}>{analysisBusy===x.id?'Extracting…':'Extract report data'}</button>
         <button type="button" className="iconbtn" title="Delete document" onClick={()=>{if(window.confirm('Delete this medical document?'))act(()=>apiDelete('/medical-documents/'+x.id));}}><Trash2 size={16}/></button>
+        {analysisById[x.id]&&<div style={{flex:'1 1 100%',padding:14,borderRadius:12,background:'#edf4ed',border:'1px solid #d6e3d6'}}>
+          <b style={{display:'block',color:'#31533d',marginBottom:6}}>Extracted information · Please verify</b>
+          <small style={{display:'block',color:'#718277',lineHeight:1.6,marginBottom:8}}>{analysisById[x.id].warning||'Review the extracted values against the original document.'}</small>
+          {(analysisById[x.id].extracted_data?.values||[]).length ? analysisById[x.id].extracted_data.values.map((v,i)=><div key={i} style={{display:'flex',justifyContent:'space-between',gap:12,padding:'6px 0',borderTop:'1px solid #d8e4d8',fontSize:12}}><span>{v.parameter.replaceAll('_',' ')}</span><b>{v.value} {v.unit}</b></div>):<small className="muted">No lab values were confidently identified. You can still view the original report.</small>}
+          <small style={{display:'block',marginTop:8,color:'#8a6b43'}}>This is automated text extraction, not an AI diagnosis. Do not use extracted values for treatment decisions without checking the original report and a clinician.</small>
+        </div>}
       </div>):<p className="muted">No documents uploaded yet.</p>}</div>
     </>}
     {tab==='history'&&<>
