@@ -14,7 +14,7 @@ function getTokenExpiry(token) {
 function notifySessionExpired() {
   window.dispatchEvent(new Event('ec-session-expired'));
 }
-function App(){const[token,setToken]=useState(localStorage.getItem('ec_token')||'');const[user,setUser]=useState(JSON.parse(localStorage.getItem('ec_user')||'null'));const[page,setPage]=useState('Dashboard');const[data,setData]=useState({medications:[],doses:[],activities:[],measurements:[],permissions:[]});const[busy,setBusy]=useState(false);const[msg,setMsg]=useState('');const[mobile,setMobile]=useState(false);
+function App(){const[token,setToken]=useState(localStorage.getItem('ec_token')||'');const[user,setUser]=useState(JSON.parse(localStorage.getItem('ec_user')||'null'));const[page,setPage]=useState('Dashboard');const[data,setData]=useState({medications:[],doses:[],activities:[],measurements:[],permissions:[]});const[busy,setBusy]=useState(false);const[msg,setMsg]=useState('');const[mobile,setMobile]=useState(false);const[caregiverOwnerEmail,setCaregiverOwnerEmail]=useState('');const[caregiverSummary,setCaregiverSummary]=useState(null);const[caregiverLoading,setCaregiverLoading]=useState(false);
 const headers=()=>({'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})});
 async function api(path,method='GET',body){
   const r=await fetch(API+path,{
@@ -121,9 +121,31 @@ function logout(){
     measurements: [],
     permissions: []
   });
+  setCaregiverSummary(null);
+  setCaregiverOwnerEmail('');
 }
 async function act(fn){try{setMsg('');await fn();await refresh();setMsg('Saved successfully.')}catch(e){setMsg(e.message)}}
-const nav=[['Dashboard',LayoutDashboard],['Medications',Pill],['Activity',Activity],['Health records',ClipboardList],['Caregiver sharing',Users]];
+async function loadCaregiverSummary(e){
+  if(e) e.preventDefault();
+  const email=caregiverOwnerEmail.trim().toLowerCase();
+  if(!email || !email.includes('@')){
+    setMsg('Please enter the elderly person’s registered email address.');
+    return;
+  }
+  setCaregiverLoading(true);
+  setMsg('');
+  setCaregiverSummary(null);
+  try{
+    const result=await api('/caregiver/summary?owner_email='+encodeURIComponent(email));
+    setCaregiverSummary(result);
+    setMsg('Caregiver information loaded successfully.');
+  }catch(error){
+    setMsg(error.message || 'Unable to load caregiver information.');
+  }finally{
+    setCaregiverLoading(false);
+  }
+}
+const nav=[['Dashboard',LayoutDashboard],['Medications',Pill],['Activity',Activity],['Health records',ClipboardList],['Caregiver sharing',Users],['Caregiver dashboard',Users]];
 if(!token)return <Auth onSubmit={submitAuth} busy={busy} msg={msg}/>;
 return <div className="app"><aside className={mobile?'side open':'side'}><div className="brand"><span className="brandicon"><Heart/></span><span>ElderCare<small>WELLNESS COMPANION</small></span><button className="mobileclose" onClick={()=>setMobile(false)}><X/></button></div><div className="navlabel">YOUR SPACE</div>{nav.map(([n,I])=><button key={n} className={'nav '+(page===n?'active':'')} onClick={()=>{setPage(n);setMobile(false)}}><I size={19}/>{n}</button>)}<div className="sidebottom"><div className="privacy"><ShieldCheck/><div><b>Your data, your choice</b><small>Caregiver sharing is optional and controlled by you.</small></div></div><button className="nav" onClick={logout}><LogOut size={18}/>Sign out</button></div></aside><main className="main"><header><button className="hamb" onClick={()=>setMobile(true)}><Menu/></button><div><div className="eyebrow">YOUR PERSONAL WELLNESS SPACE</div><h1>{page==='Dashboard'?'Good day':page}, {user?.name?.split(' ')[0]||'there'} <span className="wave">☀</span></h1></div><div className="profile"><span className="avatar">{user?.name?.[0]?.toUpperCase()}</span><div><b>{user?.name}</b><small>Personal account</small></div></div></header>{msg&&<div className="toast" onClick={()=>setMsg('')}>{msg} <X size={14}/></div>}
   <button className="primary" onClick={async () => {
@@ -143,6 +165,7 @@ return <div className="app"><aside className={mobile?'side open':'side'}><div cl
 {page==='Activity'&&<Activities data={data} act={act}/>}
 {page==='Health records'&&<Health data={data} act={act}/>}
 {page==='Caregiver sharing'&&<Sharing data={data} act={act}/>}
+{page==='Caregiver dashboard'&&<CaregiverDashboard ownerEmail={caregiverOwnerEmail} setOwnerEmail={setCaregiverOwnerEmail} summary={caregiverSummary} loading={caregiverLoading} onLookup={loadCaregiverSummary} onClear={()=>setCaregiverSummary(null)}/>}
 <footer><span>Made with care for everyday independence.</span><span>Demo MVP · Not a medical device</span></footer></main></div>}
 function Auth({onSubmit,busy,msg}){const[mode,setMode]=useState('register');return <div className="authwrap"><div className="authcard"><div className="brand authbrand"><span className="brandicon"><Heart/></span><span>ElderCare<small>WELLNESS COMPANION</small></span></div><div className="authart"><div className="sun"></div><div className="authquote">A little care,<br/><i>every day.</i><small>Simple routines. More confidence. Greater peace of mind.</small></div></div><form onSubmit={onSubmit}><h2>{mode==='register'?'Create your account':'Welcome back'}</h2><p>Manage your daily wellness in one calm, simple place.</p><input type="hidden" name="mode" value={mode}/>{mode==='register'&&<><label>Your name</label><input name="name" placeholder="e.g. Asha Sharma" required/></>}<label>Email address</label><input name="email" type="email" placeholder="you@example.com" required/><label>Password</label><input name="password" type="password" minLength="8" placeholder="At least 8 characters" required/>{msg&&<div className="error">{msg}</div>}<button className="primary full" disabled={busy}>{busy?'Please wait…':mode==='register'?'Create account':'Sign in'}</button><div className="switch">{mode==='register'?'Already have an account?':'New to ElderCare?'} <button type="button" onClick={()=>setMode(mode==='register'?'login':'register')}>{mode==='register'?'Sign in':'Create account'}</button></div></form></div><div className="authfoot">Private by design · Caregiver access is always your choice</div></div>}
 function SectionHead({eyebrow,title,desc,action}){return <div className="sectionhead"><div><div className="eyebrow">{eyebrow}</div><h2>{title}</h2><p>{desc}</p></div>{action}</div>}
@@ -300,5 +323,56 @@ function Health({ data, act }) {
 }
 
 function Sharing({data,act}){return <><SectionHead eyebrow="YOUR PRIVACY CONTROLS" title="Caregiver sharing" desc="Choose whether to share selected summaries with someone you trust."/><div className="notice"><ShieldCheck size={19}/> Sharing is optional. Only the scopes you select are included. You can revoke access at any time.</div><form className="formpanel" onSubmit={e=>{e.preventDefault();const form=e.currentTarget;let f=new FormData(form);act(()=>apiPost('/permissions',{caregiver_email:f.get('email'),scopes:f.getAll('scope')}));e.currentTarget.reset()}}><h3>Invite a caregiver</h3><Field label="Caregiver account email"><input name="email" type="email" required placeholder="caregiver@example.com"/></Field><p className="muted">Select what this person can view:</p><div className="checks"><label><input type="checkbox" name="scope" value="medications"/> Medication schedule and dose log</label><label><input type="checkbox" name="scope" value="activity"/> Activity entries</label><label><input type="checkbox" name="scope" value="health"/> Health measurements</label></div><button className="primary">Grant selected access</button></form><div className="panel mt"><h3>Sharing permissions</h3>{data.permissions.length?data.permissions.map(p=><div className="listrow permission" key={p.id}><div><b>{p.caregiver_email}</b><small>{p.scopes.join(' · ')}</small></div><span className={'status '+(p.active?'taken':'missed')}>{p.active?'Active':'Revoked'}</span>{p.active&&<button className="softbtn danger" onClick={()=>act(()=>apiDelete('/permissions/'+p.id))}>Revoke access</button>}</div>):<p className="muted">No caregiver permissions have been created.</p>}</div></>}
+
+
+function CaregiverDashboard({ownerEmail,setOwnerEmail,summary,loading,onLookup,onClear}){
+  const scopes=summary?.shared_scopes || [];
+  return <>
+    <SectionHead
+      eyebrow="APPROVED CAREGIVER ACCESS"
+      title="Caregiver dashboard"
+      desc="Enter the email address of the ElderCare account that has shared access with you. You will only see the categories they approved."
+    />
+    <form className="formpanel" onSubmit={onLookup}>
+      <h3>View a person’s shared summary</h3>
+      <Field label="ElderCare account email">
+        <input type="email" value={ownerEmail} onChange={e=>setOwnerEmail(e.target.value)} placeholder="elderly.person@example.com" required />
+      </Field>
+      <button className="primary" type="submit" disabled={loading}>
+        {loading ? 'Checking access…' : 'Check access and view summary'}
+      </button>
+      {summary && <button className="softbtn" type="button" onClick={onClear}>Clear summary</button>}
+    </form>
+
+    {!summary && <div className="notice mt"><ShieldCheck size={18}/> Access is checked by ElderCare. If permission has not been granted, has been revoked, or the email is incorrect, the information will not be shown.</div>}
+
+    {summary && <>
+      <div className="panel mt">
+        <h3>Shared by {summary.owner?.name || 'ElderCare user'}</h3>
+        <p className="muted">{summary.owner?.email}</p>
+        <p className="muted">Approved categories: {scopes.length ? scopes.join(' · ') : 'None'}</p>
+      </div>
+
+      {scopes.includes('medications') && <div className="panel mt">
+        <h3>Medication schedule</h3>
+        {summary.medications?.length ? summary.medications.map((m,i)=><div className="listrow" key={i}><b>{m.name}</b><small>{m.dosage}</small><span className="status taken">{m.schedule_time}</span></div>) : <p className="muted">No active medications have been shared.</p>}
+        <h3 className="mt">Recent dose history</h3>
+        {summary.recent_doses?.length ? summary.recent_doses.map((d,i)=><div className="listrow" key={i}><b>{d.medication}</b><small>{d.scheduled_for}</small><span className={'status '+(d.status==='taken'?'taken':'missed')}>{d.status}</span></div>) : <p className="muted">No dose history has been shared.</p>}
+      </div>}
+
+      {scopes.includes('activity') && <div className="panel mt">
+        <h3>Activity records</h3>
+        {summary.activities?.length ? summary.activities.map((a,i)=><div className="listrow" key={i}><b>{a.activity}</b><small>{a.activity_date}</small><span className="status taken">{a.minutes} min</span></div>) : <p className="muted">No activity entries have been shared.</p>}
+      </div>}
+
+      {scopes.includes('health') && <div className="panel mt">
+        <h3>Health measurements</h3>
+        {summary.measurements?.length ? summary.measurements.map((m,i)=><div className="listrow" key={i}><b>{String(m.kind || '').replace('_',' ')}</b><strong>{m.value} {m.unit}</strong><small>{m.recorded_at}</small></div>) : <p className="muted">No health measurements have been shared.</p>}
+        <p className="notice mt"><ShieldCheck size={17}/> These are user-recorded values, not clinical interpretation. Discuss readings with a qualified healthcare professional.</p>
+      </div>}
+      <p className="notice mt"><ShieldCheck size={17}/> Access depends on the account owner’s active permission. If access is revoked, a new check will be denied.</p>
+    </>}
+  </>;
+}
 
 createRoot(document.getElementById('root')).render(<App/>);
