@@ -14,7 +14,7 @@ function getTokenExpiry(token) {
 function notifySessionExpired() {
   window.dispatchEvent(new Event('ec-session-expired'));
 }
-function App(){const[token,setToken]=useState(localStorage.getItem('ec_token')||'');const[user,setUser]=useState(JSON.parse(localStorage.getItem('ec_user')||'null'));const[page,setPage]=useState('Dashboard');const[data,setData]=useState({medications:[],doses:[],activities:[],measurements:[],permissions:[]});const[busy,setBusy]=useState(false);const[msg,setMsg]=useState('');const[mobile,setMobile]=useState(false);const[caregiverOwnerEmail,setCaregiverOwnerEmail]=useState('');const[caregiverSummary,setCaregiverSummary]=useState(null);const[caregiverLoading,setCaregiverLoading]=useState(false);
+function App(){const[token,setToken]=useState(localStorage.getItem('ec_token')||'');const[user,setUser]=useState(JSON.parse(localStorage.getItem('ec_user')||'null'));const[page,setPage]=useState('Dashboard');const[data,setData]=useState({medications:[],doses:[],activities:[],measurements:[],permissions:[],medicalDocuments:[],medicalHistory:[],medicalExpenses:[]});const[busy,setBusy]=useState(false);const[msg,setMsg]=useState('');const[mobile,setMobile]=useState(false);const[caregiverOwnerEmail,setCaregiverOwnerEmail]=useState('');const[caregiverSummary,setCaregiverSummary]=useState(null);const[caregiverLoading,setCaregiverLoading]=useState(false);
 const headers=()=>({'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})});
 async function api(path,method='GET',body){
   const r=await fetch(API+path,{
@@ -34,8 +34,11 @@ async function refresh(){
   if(!token) return;
   try {
     const keys=['medications','doses','activities','measurements','permissions'];
-    const vals=await Promise.all(keys.map(k=>api('/'+k)));
-    setData(Object.fromEntries(keys.map((k,i)=>[k,vals[i]])));
+    const [vals,medicalDocuments,medicalHistory,medicalExpenses]=await Promise.all([
+      Promise.all(keys.map(k=>api('/'+k))),
+      api('/medical-documents'),api('/medical-history'),api('/medical-expenses')
+    ]);
+    setData({...Object.fromEntries(keys.map((k,i)=>[k,vals[i]])),medicalDocuments,medicalHistory,medicalExpenses});
   } catch(e) {
     setMsg(e.message);
   }
@@ -53,7 +56,10 @@ useEffect(() => {
       doses: [],
       activities: [],
       measurements: [],
-      permissions: []
+      permissions: [],
+      medicalDocuments: [],
+      medicalHistory: [],
+      medicalExpenses: []
     });
     setMsg("Your session has expired. Please log in again.");
   };
@@ -501,6 +507,20 @@ async function apiDelete(p){
   if(!r.ok) throw Error(d.error || 'Request failed');
   return d;
 }
+async function apiUpload(path, formData){
+  const r=await fetch(API+path,{method:'POST',headers:{Authorization:'Bearer '+tokenGet()},body:formData});
+  let d={};try{d=await r.json();}catch{}
+  if(r.status===401){notifySessionExpired();throw Error("Your session has expired. Please log in again.");}
+  if(!r.ok)throw Error(d.error||'Upload failed');
+  return d;
+}
+async function apiDownload(path, filename){
+  const r=await fetch(API+path,{headers:{Authorization:'Bearer '+tokenGet()}});
+  if(r.status===401){notifySessionExpired();throw Error("Your session has expired. Please log in again.");}
+  if(!r.ok){let d={};try{d=await r.json();}catch{};throw Error(d.error||'Download failed');}
+  const blob=await r.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');
+  a.href=url;a.download=filename||'medical-record';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
+}
 function Field({label,children}){return <div className="field"><label>{label}</label>{children}</div>}
 function Activities({ data, act }) {
   return (
@@ -559,70 +579,77 @@ function Activities({ data, act }) {
 }
 
 function Health({ data, act }) {
-  return (
-    <>
-      <SectionHead
-        eyebrow="PERSONAL HEALTH JOURNAL"
-        title="Health records"
-        desc="Keep a record of measurements you choose to track."
-      />
-      <form
-        className="formpanel"
-        onSubmit={(e) => {
-          e.preventDefault();
-          const form = e.currentTarget;
-          const f = new FormData(form);
-          act(async () => {
-            await apiPost('/measurements', {
-              kind: f.get('kind'),
-              value: f.get('value'),
-              unit: f.get('unit'),
-              recorded_at: new Date().toISOString().slice(0, 16),
-            });
-            form.reset();
-          });
-        }}
-      >
-        <h3>Add a measurement</h3>
+  const [tab,setTab]=useState('documents');
+  const [busy,setBusy]=useState(false);
+  const [localError,setLocalError]=useState('');
+  const documents=data.medicalDocuments||[], history=data.medicalHistory||[], expenses=data.medicalExpenses||[];
+  const total=expenses.reduce((sum,x)=>sum+Number(x.amount||0),0);
+  const monthKey=new Date().toLocaleDateString('en-CA').slice(0,7);
+  const monthTotal=expenses.filter(x=>(x.expense_date||'').startsWith(monthKey)).reduce((sum,x)=>sum+Number(x.amount||0),0);
+  async function uploadDocument(e){
+    e.preventDefault();const form=e.currentTarget;const fd=new FormData(form);setBusy(true);setLocalError('');
+    try{await apiUpload('/medical-documents',fd);form.reset();await act(async()=>{});}
+    catch(err){setLocalError(err.message||'Could not upload this document.');}
+    finally{setBusy(false);}
+  }
+  return <>
+    <SectionHead eyebrow="YOUR PERSONAL HEALTH JOURNAL" title="Health & medical records" desc="Keep measurements, medical reports, prescriptions, medical history and healthcare expenses together."/>
+    <div className="checks" style={{gridTemplateColumns:'repeat(auto-fit,minmax(145px,1fr))'}}>
+      {[['documents','Reports & prescriptions'],['history','Medical history'],['expenses','Medical expenses'],['measurements','Health measurements']].map(([id,label])=><button type="button" className={tab===id?'primary':'softbtn'} key={id} onClick={()=>setTab(id)}>{label}</button>)}
+    </div>
+    {tab==='documents'&&<>
+      <form className="formpanel" onSubmit={uploadDocument}>
+        <h3>Upload a medical document</h3><p className="muted">Upload a PDF, JPG, PNG or WEBP file (maximum 2 MB per file).</p>
         <div className="formgrid">
-          <Field label="Measurement">
-            <select name="kind">
-              <option value="blood_pressure">Blood pressure</option>
-              <option value="cholesterol">Cholesterol</option>
-              <option value="weight">Weight</option>
-            </select>
-          </Field>
-          <Field label="Value">
-            <input name="value" required placeholder="e.g. 120/80" />
-          </Field>
-          <Field label="Unit">
-            <input name="unit" required placeholder="e.g. mmHg, mg/dL, kg" />
-          </Field>
+          <Field label="Document title"><input name="title" required maxLength="180" placeholder="e.g. CBC blood test – November"/></Field>
+          <Field label="Document category"><select name="category"><option value="lab_report">Blood / laboratory report</option><option value="imaging">X-ray, MRI, CT or ECG</option><option value="prescription">Prescription</option><option value="other">Other medical document</option></select></Field>
+          <Field label="Report / prescription date"><input name="document_date" type="date" defaultValue={new Date().toLocaleDateString('en-CA')} required/></Field>
+          <Field label="Choose PDF or image"><input name="file" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/jpeg,image/png,image/webp" required/></Field>
         </div>
-        <button className="primary"><Plus size={16} /> Save measurement</button>
+        <Field label="Notes (optional)"><textarea name="notes" rows="2" maxLength="500" placeholder="Doctor, test centre or any useful note"/></Field>
+        <button className="primary" disabled={busy}>{busy?'Uploading…':'Upload document'}</button>{localError&&<p className="error">{localError}</p>}
       </form>
-      <div className="panel mt">
-        <h3>Measurement history</h3>
-        {data.measurements.length > 0 ? (
-          data.measurements.map((x) => (
-            <div className="listrow" key={x.id}>
-              <b>{x.kind.replace('_', ' ')}</b>
-              <strong>{x.value} {x.unit}</strong>
-              <small>{x.recorded_at}</small>
-            </div>
-          ))
-        ) : (
-          <Empty icon={ClipboardList} title="No measurements recorded" text="Add a measurement to start your personal health journal." />
-        )}
-      </div>
-      <p className="notice">
-        <ShieldCheck size={17} /> These are self-recorded values, not clinical interpretation. Discuss readings with a qualified healthcare professional.
-      </p>
-    </>
-  );
+      <div className="panel mt"><h3>Saved reports and prescriptions</h3>{documents.length?documents.map(x=><div className="listrow" key={x.id}>
+        <div style={{flex:'1 1 180px'}}><b>{x.title}</b><small>{x.category.replace('_',' ')} · {x.document_date} · {x.original_filename}</small>{x.notes&&<small>{x.notes}</small>}</div>
+        <button type="button" className="softbtn" onClick={()=>act(()=>apiDownload('/medical-documents/'+x.id+'/download',x.original_filename))}>View / download</button>
+        <button type="button" className="iconbtn" title="Delete document" onClick={()=>{if(window.confirm('Delete this medical document?'))act(()=>apiDelete('/medical-documents/'+x.id));}}><Trash2 size={16}/></button>
+      </div>):<p className="muted">No documents uploaded yet.</p>}</div>
+    </>}
+    {tab==='history'&&<>
+      <form className="formpanel" onSubmit={e=>{e.preventDefault();const form=e.currentTarget;const d=Object.fromEntries(new FormData(form));act(async()=>{await apiPost('/medical-history',d);form.reset();});}}>
+        <h3>Add to medical history</h3><div className="formgrid">
+          <Field label="Record type"><select name="entry_type"><option value="condition">Existing condition</option><option value="illness">Past illness</option><option value="surgery">Surgery</option><option value="allergy">Allergy</option><option value="event">Medical event</option><option value="other">Other</option></select></Field>
+          <Field label="Title"><input name="title" required maxLength="180" placeholder="e.g. Diabetes / Penicillin allergy"/></Field>
+          <Field label="Date"><input name="entry_date" type="date" defaultValue={new Date().toLocaleDateString('en-CA')} required/></Field>
+          <Field label="Doctor name"><input name="doctor_name" maxLength="150" placeholder="Optional"/></Field>
+          <Field label="Hospital / clinic"><input name="hospital_name" maxLength="150" placeholder="Optional"/></Field>
+        </div><Field label="Details / notes"><textarea name="details" rows="3" maxLength="2000" placeholder="Add relevant details"/></Field>
+        <button className="primary">Save medical history</button>
+      </form>
+      <div className="panel mt"><h3>Medical history timeline</h3>{history.length?history.map(x=><div className="listrow" key={x.id}><div style={{flex:'1 1 180px'}}><b>{x.title}</b><small>{x.entry_type} · {x.entry_date}</small><small>{[x.doctor_name,x.hospital_name].filter(Boolean).join(' · ')}</small>{x.details&&<small>{x.details}</small>}</div><button className="iconbtn" title="Delete entry" onClick={()=>{if(window.confirm('Delete this history entry?'))act(()=>apiDelete('/medical-history/'+x.id));}}><Trash2 size={16}/></button></div>):<p className="muted">No medical history entries yet.</p>}</div>
+    </>}
+    {tab==='expenses'&&<>
+      <div className="stat" style={{margin:'12px 0 18px'}}><span className="staticon"><ClipboardList/></span><div><small>Total recorded healthcare expenses</small><strong>₹{total.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}</strong><span>₹{monthTotal.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})} this month · ₹{total.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})} overall</span></div></div>
+      <form className="formpanel" onSubmit={e=>{e.preventDefault();const form=e.currentTarget;const d=Object.fromEntries(new FormData(form));act(async()=>{await apiPost('/medical-expenses',d);form.reset();});}}>
+        <h3>Add a medical expense</h3><div className="formgrid">
+          <Field label="Expense category"><select name="category"><option value="consultation">Doctor consultation</option><option value="medicine">Medicines</option><option value="diagnostic_test">Diagnostic tests</option><option value="hospital">Hospital</option><option value="treatment">Treatment</option><option value="other">Other</option></select></Field>
+          <Field label="Amount (₹)"><input name="amount" type="number" min="0.01" max="10000000" step="0.01" required placeholder="e.g. 850"/></Field>
+          <Field label="Date"><input name="expense_date" type="date" defaultValue={new Date().toLocaleDateString('en-CA')} required/></Field>
+          <Field label="Description"><input name="description" maxLength="300" placeholder="Optional details"/></Field>
+        </div><button className="primary">Save expense</button>
+      </form>
+      <div className="panel mt"><h3>Expense history</h3>{expenses.length?expenses.map(x=><div className="listrow" key={x.id}><div style={{flex:'1 1 180px'}}><b>{x.category.replace('_',' ')}</b><small>{x.expense_date} · {x.description}</small></div><strong>₹{Number(x.amount).toLocaleString('en-IN',{minimumFractionDigits:2})}</strong><button className="iconbtn" title="Delete expense" onClick={()=>{if(window.confirm('Delete this expense?'))act(()=>apiDelete('/medical-expenses/'+x.id));}}><Trash2 size={16}/></button></div>):<p className="muted">No medical expenses recorded yet.</p>}</div>
+    </>}
+    {tab==='measurements'&&<>
+      <form className="formpanel" onSubmit={e=>{e.preventDefault();const form=e.currentTarget;const f=new FormData(form);act(async()=>{await apiPost('/measurements',{kind:f.get('kind'),value:f.get('value'),unit:f.get('unit'),recorded_at:new Date().toISOString().slice(0,16)});form.reset();});}}>
+        <h3>Add a health measurement</h3><div className="formgrid"><Field label="Measurement"><select name="kind"><option value="blood_pressure">Blood pressure</option><option value="cholesterol">Cholesterol</option><option value="weight">Weight</option></select></Field><Field label="Value"><input name="value" required placeholder="e.g. 120/80"/></Field><Field label="Unit"><input name="unit" required placeholder="e.g. mmHg, mg/dL, kg"/></Field></div><button className="primary"><Plus size={16}/> Save measurement</button></form>
+      <div className="panel mt"><h3>Measurement history</h3>{data.measurements.length?data.measurements.map(x=><div className="listrow" key={x.id}><b>{x.kind.replace('_',' ')}</b><strong>{x.value} {x.unit}</strong><small>{x.recorded_at}</small></div>):<Empty icon={ClipboardList} title="No measurements recorded" text="Add a measurement to start your personal health journal."/ >}</div>
+      <p className="notice"><ShieldCheck size={17}/> These are self-recorded values, not clinical interpretation. Discuss readings with a qualified healthcare professional.</p>
+    </>}
+  </>;
 }
 
-function Sharing({data,act}){return <><SectionHead eyebrow="YOUR PRIVACY CONTROLS" title="Caregiver sharing" desc="Choose whether to share selected summaries with someone you trust."/><div className="notice"><ShieldCheck size={19}/> Sharing is optional. Only the scopes you select are included. You can revoke access at any time.</div><form className="formpanel" onSubmit={e=>{e.preventDefault();const form=e.currentTarget;let f=new FormData(form);act(()=>apiPost('/permissions',{caregiver_email:f.get('email'),scopes:f.getAll('scope')}));e.currentTarget.reset()}}><h3>Invite a caregiver</h3><Field label="Caregiver account email"><input name="email" type="email" required placeholder="caregiver@example.com"/></Field><p className="muted">Select what this person can view:</p><div className="checks"><label><input type="checkbox" name="scope" value="medications"/> View medication schedule and dose log</label><label><input type="checkbox" name="scope" value="manage_medications"/> Manage medication reminders and dose logs (includes view access)</label><label><input type="checkbox" name="scope" value="activity"/> Activity entries</label><label><input type="checkbox" name="scope" value="health"/> Health measurements</label></div><button className="primary">Grant selected access</button></form><div className="panel mt"><h3>Sharing permissions</h3>{data.permissions.length?data.permissions.map(p=><div className="listrow permission" key={p.id}><div><b>{p.caregiver_email}</b><small>{p.scopes.join(' · ')}</small></div><span className={'status '+(p.active?'taken':'missed')}>{p.active?'Active':'Revoked'}</span>{p.active&&<button className="softbtn danger" onClick={()=>act(()=>apiDelete('/permissions/'+p.id))}>Revoke access</button>}</div>):<p className="muted">No caregiver permissions have been created.</p>}</div></>}
+function Sharing({data,act}){return <><SectionHead eyebrow="YOUR PRIVACY CONTROLS" title="Caregiver sharing" desc="Choose whether to share selected summaries with someone you trust."/><div className="notice"><ShieldCheck size={19}/> Sharing is optional. Only the scopes you select are included. You can revoke access at any time.</div><form className="formpanel" onSubmit={e=>{e.preventDefault();const form=e.currentTarget;let f=new FormData(form);act(()=>apiPost('/permissions',{caregiver_email:f.get('email'),scopes:f.getAll('scope')}));e.currentTarget.reset()}}><h3>Invite a caregiver</h3><Field label="Caregiver account email"><input name="email" type="email" required placeholder="caregiver@example.com"/></Field><p className="muted">Select what this person can view:</p><div className="checks"><label><input type="checkbox" name="scope" value="medications"/> View medication schedule and dose log</label><label><input type="checkbox" name="scope" value="manage_medications"/> Manage medication reminders and dose logs (includes view access)</label><label><input type="checkbox" name="scope" value="activity"/> Activity entries</label><label><input type="checkbox" name="scope" value="health"/> Health measurements</label><label><input type="checkbox" name="scope" value="medical_records"/> Medical reports, prescriptions and history (view)</label><label><input type="checkbox" name="scope" value="expenses"/> Medical expenses (view)</label></div><button className="primary">Grant selected access</button></form><div className="panel mt"><h3>Sharing permissions</h3>{data.permissions.length?data.permissions.map(p=><div className="listrow permission" key={p.id}><div><b>{p.caregiver_email}</b><small>{p.scopes.join(' · ')}</small></div><span className={'status '+(p.active?'taken':'missed')}>{p.active?'Active':'Revoked'}</span>{p.active&&<button className="softbtn danger" onClick={()=>act(()=>apiDelete('/permissions/'+p.id))}>Revoke access</button>}</div>):<p className="muted">No caregiver permissions have been created.</p>}</div></>}
 
 
 function CaregiverDashboard({ownerEmail,setOwnerEmail,summary,loading,onLookup,onClear,onCreateMedication,onUpdateMedication,onLogDose}){
@@ -699,6 +726,8 @@ function CaregiverDashboard({ownerEmail,setOwnerEmail,summary,loading,onLookup,o
       </div>}
       {scopes.includes('activity') && <div className="panel mt"><h3>Activity records</h3>{summary.activities?.length ? summary.activities.map((a,i)=><div className="listrow" key={i}><b>{a.activity}</b><small>{a.activity_date}</small><span className="status taken">{a.minutes} min</span></div>):<p className="muted">No activity entries have been shared.</p>}</div>}
       {scopes.includes('health') && <div className="panel mt"><h3>Health measurements</h3>{summary.measurements?.length ? summary.measurements.map((m,i)=><div className="listrow" key={i}><b>{String(m.kind || '').replace('_',' ')}</b><strong>{m.value} {m.unit}</strong><small>{m.recorded_at}</small></div>):<p className="muted">No health measurements have been shared.</p>}<p className="notice mt"><ShieldCheck size={17}/> These are user-recorded values, not clinical interpretation. Discuss readings with a qualified healthcare professional.</p></div>}
+      {scopes.includes('medical_records') && <div className="panel mt"><h3>Shared medical documents</h3>{summary.medical_documents?.length ? summary.medical_documents.map((d,i)=><div className="listrow" key={d.id||i}><div style={{flex:'1 1 180px'}}><b>{d.title}</b><small>{d.category.replace('_',' ')} · {d.document_date} · {d.original_filename}</small>{d.notes&&<small>{d.notes}</small>}</div><button className="softbtn" type="button" onClick={()=>act(()=>apiDownload('/caregiver/medical-documents/'+d.id+'/download?owner_email='+encodeURIComponent(ownerEmail),d.original_filename))}>Download</button></div>):<p className="muted">No medical documents have been shared.</p>}<h3 className="mt">Medical history</h3>{summary.medical_history?.length ? summary.medical_history.map((h,i)=><div className="listrow" key={h.id||i}><div><b>{h.title}</b><small>{h.entry_type} · {h.entry_date} · {[h.doctor_name,h.hospital_name].filter(Boolean).join(' · ')}</small>{h.details&&<small>{h.details}</small>}</div></div>):<p className="muted">No medical history has been shared.</p>}</div>}
+      {scopes.includes('expenses') && <div className="panel mt"><h3>Shared medical expenses</h3>{summary.medical_expenses?.length ? summary.medical_expenses.map((x,i)=><div className="listrow" key={x.id||i}><b>{x.category.replace('_',' ')}</b><small>{x.expense_date} · {x.description}</small><strong>₹{Number(x.amount).toLocaleString('en-IN',{minimumFractionDigits:2})}</strong></div>):<p className="muted">No medical expenses have been shared.</p>}</div>}
       <p className="notice mt"><ShieldCheck size={17}/> Access depends on the account owner’s active permission. If access is revoked, a new check will be denied.</p>
     </>}
   </>;
