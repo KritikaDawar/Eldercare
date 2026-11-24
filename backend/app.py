@@ -4,6 +4,7 @@ import json
 import urllib.request
 import urllib.error
 import math
+import re
 from functools import wraps
 from flask import Flask, request, jsonify, send_file
 from sqlalchemy.pool import NullPool
@@ -135,6 +136,17 @@ class MedicalDocument(db.Model):
     original_filename = db.Column(db.String(180), nullable=False)
     mime_type = db.Column(db.String(80), nullable=False)
     file_data = db.Column(db.LargeBinary, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
+class MedicalExtraction(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    document_id = db.Column(db.Integer, db.ForeignKey("medical_document.id"), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    extracted_text = db.Column(db.Text, nullable=False, default="")
+    extracted_data = db.Column(db.Text, nullable=False, default="{}")
+    status = db.Column(db.String(30), nullable=False, default="needs_review")
+    warning = db.Column(db.String(500), default="")
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
 
@@ -497,13 +509,107 @@ ALLOWED_HISTORY_TYPES = {"condition", "illness", "surgery", "allergy", "event", 
 ALLOWED_EXPENSE_CATEGORIES = {"consultation", "medicine", "diagnostic_test", "hospital", "treatment", "other"}
 
 
+# Lightweight, explainable extraction for text-based PDFs. This is not a diagnostic ML model.
+# OCR for image/scanned documents is attempted only when Tesseract is available in the runtime.
+MEDICAL_VALUE_PATTERNS = [
+    ("haemoglobin", r"\b(?:haemoglobin|hemoglobin|hb)\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(g/dl|g/l)?"),
+    ("fasting_glucose", r"\b(?:fasting\s+blood\s+glucose|fasting\s+glucose|fbs)\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(mg/dl|mmol/l)?"),
+    ("random_glucose", r"\b(?:random\s+blood\s+sugar|random\s+glucose|rbs)\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(mg/dl|mmol/l)?"),
+    ("total_cholesterol", r"\b(?:total\s+cholesterol|cholesterol)\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(mg/dl|mmol/l)?"),
+    ("hdl", r"\bhdl(?:\s+cholesterol)?\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(mg/dl|mmol/l)?"),
+    ("ldl", r"\bldl(?:\s+cholesterol)?\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(mg/dl|mmol/l)?"),
+    ("triglycerides", r"\btriglycerides?\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(mg/dl|mmol/l)?"),
+    ("creatinine", r"\bcreatinine\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(mg/dl|umol/l|µmol/l)?"),
+    ("tsh", r"\btsh\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(uiu/ml|miu/l)?"),
+    ("vitamin_d", r"\b(?:25\s*[- ]?oh\s+vitamin\s+d|vitamin\s+d)\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(ng/ml|nmol/l)?"),
+]
+
+
+def extract_medical_text(file_bytes, mime_type):
+    """Return extracted text and an explanatory extraction status."""
+    if mime_type == "application/pdf":
+        try:
+            from pypdf import PdfReader
+            from io import BytesIO
+            reader = PdfReader(BytesIO(file_bytes))
+            text_parts = [(page.extract_text() or "") for page in reader.pages[:20]]
+            text = "\n".join(text_parts).strip()
+            if text:
+                return text[:50000], "text_extracted", "Text extracted from PDF. Please verify every value against the original report."
+            return "", "ocr_required", "This PDF appears to be scanned or image-only. OCR is not available in this deployment yet; please enter values manually or upload a text-based PDF."
+        except Exception:
+            return "", "extraction_failed", "Could not read this PDF. Please check that it is a valid, unencrypted PDF."
+    if mime_type.startswith("image/"):
+        try:
+            from PIL import Image
+            import pytesseract
+            from io import BytesIO
+            image = Image.open(BytesIO(file_bytes)).convert("RGB")
+            text = pytesseract.image_to_string(image, timeout=12).strip()
+            if text:
+                return text[:50000], "text_extracted", "OCR text extracted. Image OCR can make mistakes; verify every value against the original report."
+            return "", "no_text_found", "No readable text was found in this image. Try a clearer image or enter values manually."
+        except Exception:
+            return "", "ocr_unavailable", "Image OCR is not installed in the current server runtime. PDF text extraction is available; image OCR will be enabled in a later deployment step."
+    return "", "unsupported", "This document type is not supported for extraction."
+
+
+def parse_medical_values(text):
+    normalized = re.sub(r"\s+", " ", text or "")
+    results = []
+    for key, pattern in MEDICAL_VALUE_PATTERNS:
+        match = re.search(pattern, normalized, flags=re.IGNORECASE)
+        if match:
+            results.append({"parameter": key, "value": match.group(1), "unit": (match.group(2) or "").strip(), "source_match": match.group(0)[:120]})
+    date_match = re.search(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2})\b", normalized)
+    return {"values": results, "possible_report_date": date_match.group(1) if date_match else None, "extraction_method": "pattern_based_text_extraction"}
+
+
+@app.post("/api/medical-documents/<int:item_id>/analyze")
+@jwt_required()
+def analyze_medical_document(item_id):
+    user = current_user()
+    document = MedicalDocument.query.filter_by(id=item_id, user_id=user.id).first()
+    if not document:
+        return fail("Medical document not found.", 404)
+    text, status, warning = extract_medical_text(document.file_data, document.mime_type)
+    extracted = parse_medical_values(text)
+    record = MedicalExtraction.query.filter_by(document_id=document.id, user_id=user.id).order_by(MedicalExtraction.created_at.desc()).first()
+    if not record:
+        record = MedicalExtraction(document_id=document.id, user_id=user.id)
+        db.session.add(record)
+    record.extracted_text = text
+    record.extracted_data = json.dumps(extracted)
+    record.status = status if extracted["values"] or status != "text_extracted" else "text_extracted_no_values"
+    record.warning = warning if extracted["values"] else (warning + " No supported lab values were confidently recognised.")
+    db.session.commit()
+    return jsonify({"document_id": document.id, "status": record.status, "warning": record.warning, "extracted_data": extracted, "review_required": True})
+
+
+@app.get("/api/medical-documents/<int:item_id>/analysis")
+@jwt_required()
+def get_medical_document_analysis(item_id):
+    user = current_user()
+    document = MedicalDocument.query.filter_by(id=item_id, user_id=user.id).first()
+    if not document:
+        return fail("Medical document not found.", 404)
+    record = MedicalExtraction.query.filter_by(document_id=document.id, user_id=user.id).order_by(MedicalExtraction.created_at.desc()).first()
+    if not record:
+        return jsonify({"document_id": document.id, "status": "not_analyzed", "review_required": True})
+    try:
+        extracted = json.loads(record.extracted_data or "{}")
+    except (TypeError, ValueError):
+        extracted = {}
+    return jsonify({"document_id": document.id, "status": record.status, "warning": record.warning, "extracted_data": extracted, "review_required": True})
+
+
 @app.route("/api/medical-documents", methods=["GET", "POST"])
 @jwt_required()
 def medical_documents():
     u = current_user()
     if request.method == "GET":
         rows = MedicalDocument.query.filter_by(user_id=u.id).order_by(MedicalDocument.document_date.desc()).all()
-        return jsonify([{"id":x.id,"title":x.title,"category":x.category,"document_date":x.document_date,"notes":x.notes,"original_filename":x.original_filename,"mime_type":x.mime_type} for x in rows])
+        return jsonify([{"id":x.id,"title":x.title,"category":x.category,"document_date":x.document_date,"notes":x.notes,"original_filename":x.original_filename,"mime_type":x.mime_type, "analysis_status": (MedicalExtraction.query.filter_by(document_id=x.id, user_id=u.id).order_by(MedicalExtraction.created_at.desc()).first().status if MedicalExtraction.query.filter_by(document_id=x.id, user_id=u.id).first() else "not_analyzed")} for x in rows])
 
     upload = request.files.get("file")
     title = (request.form.get("title") or "").strip()
