@@ -5,6 +5,7 @@ import urllib.request
 import urllib.error
 from functools import wraps
 from flask import Flask, request, jsonify
+from sqlalchemy.pool import NullPool
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from flask_bcrypt import Bcrypt
@@ -45,7 +46,11 @@ app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "dev-jwt-change-me")
 db_url = os.getenv("DATABASE_URL", "sqlite:///eldercare.db")
 if db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql://", 1)
-app.config["SQLALCHEMY_DATABASE_URI"] = db_url
+    app.config["SQLALCHEMY_DATABASE_URI"] = db_url
+app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+    "poolclass": NullPool,
+    "connect_args": {"sslmode": "require"}
+}
 CORS(app, resources={r"/*": {"origins": [
     "https://eldercare-cu8d.vercel.app",
     "http://localhost:5173"
