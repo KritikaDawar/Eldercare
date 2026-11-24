@@ -16,14 +16,51 @@ function notifySessionExpired() {
 }
 function App(){const[token,setToken]=useState(localStorage.getItem('ec_token')||'');const[user,setUser]=useState(JSON.parse(localStorage.getItem('ec_user')||'null'));const[page,setPage]=useState('Dashboard');const[data,setData]=useState({medications:[],doses:[],activities:[],measurements:[],permissions:[]});const[busy,setBusy]=useState(false);const[msg,setMsg]=useState('');const[mobile,setMobile]=useState(false);
 const headers=()=>({'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})});
-async function api(path,method='GET',body){const r=await fetch(API+path,{method,headers:headers(),...(body?{body:JSON.stringify(body)}:{})});const d=await r.json();return d}
-async function refresh(){if(!token)return;try{const keys=['medications','doses','activities','measurements','permissions'];const vals=await Promise.all(keys.map(k=>api(if (r.status === 401) {
-  notifySessionExpired();
-  throw Error("Your session has expired. Please log in again.");
+async function api(path,method='GET',body){
+  const r=await fetch(API+path,{
+    method,
+    headers:headers(),
+    ...(body?{body:JSON.stringify(body)}:{})
+  });
+  const d=await r.json();
+  if(r.status===401 && token){
+    notifySessionExpired();
+    throw Error("Your session has expired. Please log in again.");
+  }
+  if(!r.ok) throw Error(d.error || 'Request failed');
+  return d;
 }
-
-if (!r.ok) throw Error(d.error || 'Request failed');'/'+k)));setData(Object.fromEntries(keys.map((k,i)=>[k,vals[i]])))}catch(e){setMsg(e.message)}}
+async function refresh(){
+  if(!token) return;
+  try {
+    const keys=['medications','doses','activities','measurements','permissions'];
+    const vals=await Promise.all(keys.map(k=>api('/'+k)));
+    setData(Object.fromEntries(keys.map((k,i)=>[k,vals[i]])));
+  } catch(e) {
+    setMsg(e.message);
+  }
+}
 useEffect(()=>{refresh()},[token]);
+
+useEffect(() => {
+  const handleExpired = () => {
+    localStorage.removeItem('ec_token');
+    localStorage.removeItem('ec_user');
+    setToken('');
+    setUser(null);
+    setData({
+      medications: [],
+      doses: [],
+      activities: [],
+      measurements: [],
+      permissions: []
+    });
+    setMsg("Your session has expired. Please log in again.");
+  };
+
+  window.addEventListener('ec-session-expired', handleExpired);
+  return () => window.removeEventListener('ec-session-expired', handleExpired);
+}, []);
                useEffect(() => {
   if (!token) return;
 
@@ -72,7 +109,19 @@ useEffect(()=>{refresh()},[token]);
   return () => clearInterval(timer);
 }, [token, data.medications]);
 async function submitAuth(e){e.preventDefault();setBusy(true);setMsg('');const f=new FormData(e.currentTarget);try{const d=await api('/auth/'+(f.get('mode')==='register'?'register':'login'),'POST',{name:f.get('name'),email:f.get('email'),password:f.get('password')});localStorage.setItem('ec_token',d.token);localStorage.setItem('ec_user',JSON.stringify(d.user));setToken(d.token);setUser(d.user)}catch(x){setMsg(x.message)}finally{setBusy(false)}}
-function logout(){localStorage.clear();setToken('');setUser(null)}
+function logout(){
+  localStorage.removeItem('ec_token');
+  localStorage.removeItem('ec_user');
+  setToken('');
+  setUser(null);
+  setData({
+    medications: [],
+    doses: [],
+    activities: [],
+    measurements: [],
+    permissions: []
+  });
+}
 async function act(fn){try{setMsg('');await fn();await refresh();setMsg('Saved successfully.')}catch(e){setMsg(e.message)}}
 const nav=[['Dashboard',LayoutDashboard],['Medications',Pill],['Activity',Activity],['Health records',ClipboardList],['Caregiver sharing',Users]];
 if(!token)return <Auth onSubmit={submitAuth} busy={busy} msg={msg}/>;
@@ -101,7 +150,34 @@ function Dashboard({data,setPage,user}){const taken=data.doses.filter(x=>x.statu
 function Stat({icon:I,label,value,sub}){return <div className="stat"><span className="staticon"><I/></span><div><small>{label}</small><strong>{value}</strong><span>{sub}</span></div></div>}
 function Empty({icon:I,title,text,button,onClick}){return <div className="empty"><span><I/></span><b>{title}</b><p>{text}</p>{button&&<button className="primary" onClick={onClick}><Plus size={16}/>{button}</button>}</div>}
 function Medications({data,act}){const[show,setShow]=useState(false);return <><SectionHead eyebrow="MEDICATION ROUTINE" title="Your medicines" desc="Keep your prescribed medication schedule organised." action={<button className="primary" onClick={()=>setShow(!show)}><Plus size={17}/> Add medicine</button>}/>{show&&<form className="formpanel" onSubmit={e=>{e.preventDefault();const form=e.currentTarget;let f=new FormData(form);act(async()=>{await apiPost('/medications',{name:f.get('name'),dosage:f.get('dosage'),schedule_time:f.get('time'),instructions:f.get('instructions')});setShow(false)})}}><h3>New medication</h3><div className="formgrid"><Field label="Medicine name"><input name="name" required placeholder="Medicine name"/></Field><Field label="Dosage"><input name="dosage" required placeholder="e.g. 1 tablet"/></Field><Field label="Reminder time"><input name="time" type="time" required/></Field><Field label="Instructions"><input name="instructions" placeholder="e.g. After food"/></Field></div><button className="primary">Save medication</button></form>}<div className="panel">{data.medications.length?data.medications.map(m=><div className="medrow large" key={m.id}><div className="medicon"><Pill/></div><div className="medinfo"><b>{m.name}</b><small>{m.dosage} · {m.instructions||'No additional instructions'}</small></div><span className="time"><Clock size={14}/>{m.schedule_time}</span><button className="iconbtn" title="Delete" onClick={()=>act(()=>apiDelete('/medications/'+m.id))}><Trash2 size={17}/></button><button className="softbtn" onClick={()=>act(()=>apiPost('/doses',{medication_id:m.id,status:'taken'}))}>Log taken</button><button className="softbtn" onClick={()=>act(()=>apiPost('/doses',{medication_id:m.id,status:'skipped'}))}>Log skipped</button></div>):<Empty icon={Pill} title="Your medication list is empty" text="Add medicines exactly as prescribed by your healthcare professional."/>}</div><div className="panel mt"><h3>Recent dose activity</h3>{data.doses.length?data.doses.slice(0,8).map(d=><div className="listrow" key={d.id}><span>{d.medication}</span><small>{d.scheduled_for}</small><span className={'status '+d.status}>{d.status}</span></div>):<p className="muted">Dose entries will appear here when you log them.</p>}</div></>}
-let tokenGet=()=>localStorage.getItem('ec_token');async function apiPost(p,b){let r=await fetch(API+p,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+tokenGet()},body:JSON.stringify(b)});let d=await r.json();if(!r.ok)throw Error(d.error);return d}async function apiDelete(p){let r=await fetch(API+p,{method:'DELETE',headers:{Authorization:'Bearer '+tokenGet()}});let d=await r.json();if(!r.ok)throw Error(d.error);return d}
+let tokenGet=()=>localStorage.getItem('ec_token');
+async function apiPost(p,b){
+  let r=await fetch(API+p,{
+    method:'POST',
+    headers:{'Content-Type':'application/json',Authorization:'Bearer '+tokenGet()},
+    body:JSON.stringify(b)
+  });
+  let d=await r.json();
+  if(r.status===401){
+    notifySessionExpired();
+    throw Error("Your session has expired. Please log in again.");
+  }
+  if(!r.ok) throw Error(d.error || 'Request failed');
+  return d;
+}
+async function apiDelete(p){
+  let r=await fetch(API+p,{
+    method:'DELETE',
+    headers:{Authorization:'Bearer '+tokenGet()}
+  });
+  let d=await r.json();
+  if(r.status===401){
+    notifySessionExpired();
+    throw Error("Your session has expired. Please log in again.");
+  }
+  if(!r.ok) throw Error(d.error || 'Request failed');
+  return d;
+}
 function Field({label,children}){return <div className="field"><label>{label}</label>{children}</div>}
 function Activities({ data, act }) {
   return (
