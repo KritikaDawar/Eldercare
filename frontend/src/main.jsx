@@ -603,7 +603,18 @@ function Health({ data, act }) {
   const monthTotal=expenses.filter(x=>(x.expense_date||'').startsWith(monthKey)).reduce((sum,x)=>sum+Number(x.amount||0),0);
   async function uploadDocument(e){
     e.preventDefault();const form=e.currentTarget;const fd=new FormData(form);setBusy(true);setLocalError('');
-    try{await apiUpload('/medical-documents',fd);form.reset();await act(async()=>{});}
+    try{
+      const uploaded=await apiUpload('/medical-documents',fd);
+      if(uploaded.extracted_data){
+        setAnalysisById(prev=>({...prev,[uploaded.id]:{
+          status:uploaded.analysis_status,warning:uploaded.warning,
+          extracted_data:uploaded.extracted_data,review_required:true
+        }}));
+      }
+      form.reset();
+      await act(async()=>{});
+      setLocalError('');
+    }
     catch(err){setLocalError(err.message||'Could not upload this document.');}
     finally{setBusy(false);}
   }
@@ -614,26 +625,32 @@ function Health({ data, act }) {
     </div>
     {tab==='documents'&&<>
       <form className="formpanel" onSubmit={uploadDocument}>
-        <h3>Upload a medical document</h3><p className="muted">Upload a PDF, JPG, PNG or WEBP file (maximum 2 MB per file).</p>
-        <div className="formgrid">
-          <Field label="Document title"><input name="title" required maxLength="180" placeholder="e.g. CBC blood test – November"/></Field>
-          <Field label="Document category"><select name="category"><option value="lab_report">Blood / laboratory report</option><option value="imaging">X-ray, MRI, CT or ECG</option><option value="prescription">Prescription</option><option value="other">Other medical document</option></select></Field>
-          <Field label="Report / prescription date"><input name="document_date" type="date" defaultValue={new Date().toLocaleDateString('en-CA')} required/></Field>
-          <Field label="Choose PDF or image"><input name="file" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/jpeg,image/png,image/webp" required/></Field>
+        <h3>Upload a medical report</h3>
+        <p className="muted">Choose a PDF or image. ElderCare will save the original file, automatically read the text, and organise any recognised medical values. You do not need to select a report type or enter a date.</p>
+        <div className="formgrid" style={{gridTemplateColumns:'minmax(0,1fr)'}}>
+          <Field label="Choose a report (PDF or image)">
+            <input name="file" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/jpeg,image/png,image/webp" required/>
+          </Field>
         </div>
-        <Field label="Notes (optional)"><textarea name="notes" rows="2" maxLength="500" placeholder="Doctor, test centre or any useful note"/></Field>
-        <button className="primary" disabled={busy}>{busy?'Uploading…':'Upload document'}</button>{localError&&<p className="error">{localError}</p>}
+        <details style={{margin:'4px 0 16px',padding:'11px 14px',border:'1px solid #d5e1d5',borderRadius:12,background:'#edf3eb'}}>
+          <summary style={{cursor:'pointer',fontSize:12,fontWeight:750,color:'#476453'}}>Add a note (optional)</summary>
+          <div style={{marginTop:12}}>
+            <Field label="Note"><textarea name="notes" rows="2" maxLength="500" placeholder="Optional: doctor, clinic or anything you want to remember"/></Field>
+          </div>
+        </details>
+        <button className="primary" disabled={busy}>{busy?'Uploading and reading…':'Upload report'}</button>
+        {localError&&<p className="error">{localError}</p>}
       </form>
       <div className="panel mt"><h3>Saved reports and prescriptions</h3>{documents.length?documents.map(x=><div className="listrow" key={x.id}>
-        <div style={{flex:'1 1 180px'}}><b>{x.title}</b><small>{x.category.replace('_',' ')} · {x.document_date} · {x.original_filename}</small>{x.notes&&<small>{x.notes}</small>}</div>
+        <div style={{flex:'1 1 180px',minWidth:0}}><b>{x.original_filename||x.title||'Medical document'}</b><small>Saved securely · {x.analysis_status==='text_extracted'?'Text read':x.analysis_status==='text_extracted_no_values'?'Text read · no supported values found':x.analysis_status==='not_analyzed'?'Not yet read':'Needs review'}</small>{x.notes&&<small>{x.notes}</small>}</div>
         <button type="button" className="softbtn" onClick={()=>act(()=>apiDownload('/medical-documents/'+x.id+'/download',x.original_filename))}>View / download</button>
-        <button type="button" className="primary" disabled={analysisBusy===x.id} onClick={()=>analyzeDocument(x.id)}>{analysisBusy===x.id?'Extracting…':'Extract report data'}</button>
+        <button type="button" className="primary" disabled={analysisBusy===x.id} onClick={()=>analyzeDocument(x.id)}>{analysisBusy===x.id?'Extracting…':'Read again'}</button>
         <button type="button" className="iconbtn" title="Delete document" onClick={()=>{if(window.confirm('Delete this medical document?'))act(()=>apiDelete('/medical-documents/'+x.id));}}><Trash2 size={16}/></button>
         {analysisById[x.id]&&<div style={{flex:'1 1 100%',padding:14,borderRadius:12,background:'#edf4ed',border:'1px solid #d6e3d6'}}>
-          <b style={{display:'block',color:'#31533d',marginBottom:6}}>Extracted information · Please verify</b>
+          <b style={{display:'block',color:'#31533d',marginBottom:6}}>Information read from your report</b>
           <small style={{display:'block',color:'#718277',lineHeight:1.6,marginBottom:8}}>{analysisById[x.id].warning||'Review the extracted values against the original document.'}</small>
           {(analysisById[x.id].extracted_data?.values||[]).length ? analysisById[x.id].extracted_data.values.map((v,i)=><div key={i} style={{display:'flex',justifyContent:'space-between',gap:12,padding:'6px 0',borderTop:'1px solid #d8e4d8',fontSize:12}}><span>{v.parameter.replaceAll('_',' ')}</span><b>{v.value} {v.unit}</b></div>):<small className="muted">No lab values were confidently identified. You can still view the original report.</small>}
-          <small style={{display:'block',marginTop:8,color:'#8a6b43'}}>This is automated text extraction, not an AI diagnosis. Do not use extracted values for treatment decisions without checking the original report and a clinician.</small>
+          <small style={{display:'block',marginTop:8,color:'#8a6b43'}}>Automatically extracted text can contain mistakes. Check every value against the original report. This is not a diagnosis or a substitute for a clinician.</small>
         </div>}
       </div>):<p className="muted">No documents uploaded yet.</p>}</div>
     </>}
