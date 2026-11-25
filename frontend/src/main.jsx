@@ -1,5 +1,9 @@
 import React,{useEffect,useState} from 'react';import{createRoot}from'react-dom/client';import{Heart,LayoutDashboard,Pill,Activity,ClipboardList,Users,LogOut,Plus,CheckCircle2,Clock,ShieldCheck,Menu, X,Trash2,Leaf,ArrowUpRight,Siren}from'lucide-react';import'./style.css';
-const API=import.meta.env.VITE_API_URL || 'http://127.0.0.1:5000/api';
+// Always use the deployed API if the Vercel build has a missing or local-only env value.
+const configuredApi = import.meta.env.VITE_API_URL;
+const API = configuredApi && !/^(https?:\/\/)?(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(configuredApi)
+  ? configuredApi.replace(/\/+$/, '')
+  : 'https://eldercare-5ey2.vercel.app/api';
 function getTokenExpiry(token) {
   try {
     const payload = JSON.parse(
